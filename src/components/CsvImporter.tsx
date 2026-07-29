@@ -31,6 +31,14 @@ interface CachedFileInfo {
   storeName: string;
 }
 
+// Store values arrive as "211:北エリア", so the leading digit run is the store code.
+// Anchored on a non-digit boundary, otherwise "2110:西エリア" would collapse into
+// the same code as "211:北エリア" and one of the two stores becomes unreachable.
+export const storeCodeOf = (store: string): string | null => {
+  const match = (store || "").trim().match(/^(\d+)(?=\D|$)/);
+  return match ? match[1] : null;
+};
+
 // Helper to parse CSV text into InspectionListItem array
 export const parseCsvText = (text: string, defaultFileName: string = ""): { items: InspectionListItem[]; storeName: string } => {
   const rawLines = text.split(/\r?\n/).map((line) => line.trim());
@@ -110,21 +118,15 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
     if (colorIdx === -1) colorIdx = 8;
     if (sizeIdx === -1) sizeIdx = 9;
     if (qtyIdx === -1) qtyIdx = 11;
-
-    // The store sits in the last labelled column of this layout. Locate it rather
-    // than assuming index 20: with the documented 20 columns that is one past the
-    // final column, so every data row failed the width check below and the file
-    // was silently parsed as empty.
-    if (storeIdx === -1 || headers[storeIdx]?.includes("コード")) {
-      const lastLabelledIdx = headers.reduce(
-        (found, header, idx) => (idx > qtyIdx && header ? idx : found),
-        -1,
-      );
-      if (lastLabelledIdx !== -1) storeIdx = lastLabelledIdx;
-    }
   }
 
-  if (storeIdx === -1) storeIdx = 0;
+  // Only the narrow store,part,size,color,qty layout gets a positional store
+  // default. A wide layout leaves storeIdx at -1 instead of guessing: index 0
+  // there is 納品日, and guessing a column produced one phantom store per
+  // distinct value in it. The 納品先 preamble and the filename prefix below name
+  // the store in that case. A column that only carries a store *code* is kept as
+  // found — a bare "211" identifies the store perfectly well.
+  if (storeIdx === -1 && headers.length < 20) storeIdx = 0;
   if (partNumIdx === -1) partNumIdx = 1;
   if (sizeIdx === -1) sizeIdx = 2;
   if (colorIdx === -1) colorIdx = 3;
@@ -142,9 +144,12 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
     if (!line || line.replace(/,/g, "").trim().length === 0) continue;
 
     const cols = parseCSVLine(line);
-    if (cols.length <= Math.max(storeIdx, partNumIdx, sizeIdx, colorIdx, qtyIdx)) continue;
+    // storeIdx is deliberately excluded: it may be absent, and a header row wider
+    // than the data rows would otherwise fail this check for every row and parse
+    // the whole file as empty. The other four columns have no fallback.
+    if (cols.length <= Math.max(partNumIdx, sizeIdx, colorIdx, qtyIdx)) continue;
 
-    let store = cols[storeIdx]?.trim() || detectedStoreName || "共通";
+    let store = (storeIdx >= 0 ? cols[storeIdx]?.trim() : "") || detectedStoreName || "共通";
     
     // If store is just digits or needs formatting
     if (storePrefix && !store.startsWith(storePrefix)) {
@@ -203,9 +208,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
     inspectionList.forEach((item) => {
       const store = (item.store || "").trim();
       if (!store) return;
-      // Store names come through as "211:北エリア", so the leading digits are the code
-      const codeMatch = store.match(/^(\d{3})/);
-      const key = codeMatch ? codeMatch[1] : store;
+      const key = storeCodeOf(store) ?? store;
       if (!groups[key]) {
         groups[key] = { storeName: store, count: 0 };
       }
@@ -219,7 +222,11 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
   const switchableStores = useMemo(() => {
     const merged: Record<string, { storeName: string; count: number }> = { ...storeGroups };
     (Object.entries(loadedFilesCache) as [string, CachedFileInfo][]).forEach(([code, file]) => {
-      merged[code] = { storeName: file.storeName, count: file.items.length };
+      // Cache keys come from the filename while storeGroups keys come from the store
+      // value. Normalise to the store's own code so one store cannot render as two
+      // badges with the row count claimed twice.
+      const key = storeCodeOf(file.storeName) ?? storeCodeOf(code) ?? code;
+      merged[key] = { storeName: file.storeName, count: file.items.length };
     });
     return Object.entries(merged).sort(([a], [b]) => a.localeCompare(b));
   }, [storeGroups, loadedFilesCache]);
@@ -335,7 +342,11 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
 
   // Switch store by 3-digit store code (e.g. "211")
   const handleApplyStoreByCode = (code: string) => {
-    setTargetStoreCode(code);
+    // Badges can be keyed by a store name rather than a code, and stuffing that into
+    // the digits-only field built a nonsense 対象ファイル指定 path out of it.
+    if (/^\d*$/.test(code.trim())) {
+      setTargetStoreCode(code);
+    }
     setError(null);
     setSuccess(null);
 
@@ -360,14 +371,14 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
       return;
     }
 
-    // Try finding in currently loaded items by matching store name or code
-    // E.g. store is "211:北エリア" or "211"
+    // Finally match on the store's own leading code. This used to be a bare
+    // `includes(cleanCode)`, which matched the code anywhere in the string: entering
+    // "211" selected "305:第211倉庫", and a single digit "silently succeeded" against
+    // an arbitrary store.
     const matchingItems = [
       ...(Object.values(loadedFilesCache) as CachedFileInfo[]).flatMap((c) => c.items),
       ...inspectionList,
-    ].filter(
-      (i) => i.store.startsWith(cleanCode) || i.store.includes(cleanCode)
-    );
+    ].filter((i) => storeCodeOf(i.store) === cleanCode || i.store.trim() === cleanCode);
 
     if (matchingItems.length > 0 && onSelectStore) {
       const foundStoreName = matchingItems[0].store;
@@ -592,7 +603,11 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
           </div>
           <div className="flex flex-wrap gap-2">
             {switchableStores.map(([codeKey, storeData]) => {
-              const isSelected = selectedStore.includes(codeKey) || selectedStore === storeData.storeName;
+              // Compare on the store's own code, not `selectedStore.includes(codeKey)`:
+              // that matched a code anywhere in the name, so selecting "305:第211倉庫"
+              // lit up the 211 badge as well.
+              const isSelected =
+                storeCodeOf(selectedStore) === codeKey || selectedStore === storeData.storeName;
               return (
                 <button
                   key={codeKey}
