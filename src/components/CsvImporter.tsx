@@ -31,6 +31,152 @@ interface CachedFileInfo {
   storeName: string;
 }
 
+// Helper to parse CSV text into InspectionListItem array
+export const parseCsvText = (text: string, defaultFileName: string = ""): { items: InspectionListItem[]; storeName: string } => {
+  const rawLines = text.split(/\r?\n/).map((line) => line.trim());
+  
+  // Check line 2 for store info like "納品先,211:北エリア（店舗名）"
+  let storeFromLine2 = "";
+  if (rawLines.length > 1) {
+    const line2Cols = rawLines[1].split(",");
+    if (line2Cols.length >= 2 && line2Cols[1]?.trim()) {
+      storeFromLine2 = line2Cols[1].trim();
+    }
+  }
+
+  // Find header line (typically 3rd non-empty line)
+  let headerLineIndex = 2;
+  let headerLine = rawLines[headerLineIndex];
+
+  if (!headerLine || headerLine.replace(/,/g, "").trim().length === 0) {
+    const indices: number[] = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      if (rawLines[i].replace(/,/g, "").trim().length > 0) {
+        indices.push(i);
+      }
+    }
+    if (indices.length >= 3) {
+      headerLineIndex = indices[2];
+      headerLine = rawLines[headerLineIndex];
+    }
+  }
+
+  if (!headerLine) {
+    return { items: [], storeName: "" };
+  }
+
+  const separator = text.includes("\t") ? "\t" : ",";
+
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === separator && !inQuotes) {
+        result.push(current.trim().replace(/^"|"$/g, ""));
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim().replace(/^"|"$/g, ""));
+    return result;
+  };
+
+  const headers = parseCSVLine(headerLine).map((h) => h.trim().toLowerCase());
+
+  let storeIdx = headers.findIndex((h) => h === "店舗名" || h === "店名" || h === "店舗名（漢字）");
+  if (storeIdx === -1) storeIdx = headers.findIndex((h) => h.includes("店舗名") || h.includes("店名"));
+  if (storeIdx === -1) storeIdx = headers.findIndex((h) => (h.includes("店舗") && !h.includes("コード") && !h.includes("cd")) || h.includes("店") || h.includes("store"));
+  if (storeIdx === -1) storeIdx = headers.findIndex((h) => h.includes("店舗"));
+
+  let partNumIdx = headers.findIndex((h) => h === "品番" || h === "型番" || h === "メーカー品番");
+  if (partNumIdx === -1) partNumIdx = headers.findIndex((h) => h.includes("品番") || h.includes("型番") || h.includes("商品") || h.includes("コード"));
+
+  let sizeIdx = headers.findIndex((h) => h === "サイズ" || h === "サイズ名" || h === "size");
+  if (sizeIdx === -1) sizeIdx = headers.findIndex((h) => h.includes("サイズ") || h.includes("寸法") || h.includes("size"));
+
+  let colorIdx = headers.findIndex((h) => h === "カラー" || h === "カラー名" || h === "color");
+  if (colorIdx === -1) colorIdx = headers.findIndex((h) => h.includes("カラー") || h.includes("色") || h.includes("color"));
+
+  let qtyIdx = headers.findIndex((h) => h === "枚数" || h === "数量" || h === "予定数" || h === "予定数量");
+  if (qtyIdx === -1) qtyIdx = headers.findIndex((h) => h.includes("枚数") || h.includes("予定") || h.includes("数量") || h.includes("個数") || h.includes("qty"));
+
+  if (headers.length >= 20) {
+    if (partNumIdx === -1) partNumIdx = 7;
+    if (colorIdx === -1) colorIdx = 8;
+    if (sizeIdx === -1) sizeIdx = 9;
+    if (qtyIdx === -1) qtyIdx = 11;
+
+    // The store sits in the last labelled column of this layout. Locate it rather
+    // than assuming index 20: with the documented 20 columns that is one past the
+    // final column, so every data row failed the width check below and the file
+    // was silently parsed as empty.
+    if (storeIdx === -1 || headers[storeIdx]?.includes("コード")) {
+      const lastLabelledIdx = headers.reduce(
+        (found, header, idx) => (idx > qtyIdx && header ? idx : found),
+        -1,
+      );
+      if (lastLabelledIdx !== -1) storeIdx = lastLabelledIdx;
+    }
+  }
+
+  if (storeIdx === -1) storeIdx = 0;
+  if (partNumIdx === -1) partNumIdx = 1;
+  if (sizeIdx === -1) sizeIdx = 2;
+  if (colorIdx === -1) colorIdx = 3;
+  if (qtyIdx === -1) qtyIdx = 4;
+
+  const parsedItems: InspectionListItem[] = [];
+  let detectedStoreName = storeFromLine2;
+
+  // Try extracting store number from filename e.g. "211店別納品一覧表.CSV"
+  const matchStoreNumInFile = defaultFileName.match(/^(\d{3})/);
+  let storePrefix = matchStoreNumInFile ? matchStoreNumInFile[1] : "";
+
+  for (let i = headerLineIndex + 1; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    if (!line || line.replace(/,/g, "").trim().length === 0) continue;
+
+    const cols = parseCSVLine(line);
+    if (cols.length <= Math.max(storeIdx, partNumIdx, sizeIdx, colorIdx, qtyIdx)) continue;
+
+    let store = cols[storeIdx]?.trim() || detectedStoreName || "共通";
+    
+    // If store is just digits or needs formatting
+    if (storePrefix && !store.startsWith(storePrefix)) {
+      store = `${storePrefix}:${store}`;
+    }
+
+    if (!detectedStoreName) detectedStoreName = store;
+
+    const partNumber = cols[partNumIdx]?.trim() || "";
+    const size = cols[sizeIdx]?.trim() || "フリー";
+    const color = cols[colorIdx]?.trim() || "アソート";
+    const qtyStr = cols[qtyIdx]?.trim() || "1";
+    const expectedQty = parseInt(qtyStr, 10);
+
+    if (!partNumber || partNumber === "品番" || partNumber.includes("メーカー") || partNumber.includes("コード")) {
+      continue;
+    }
+
+    parsedItems.push({
+      id: `csv_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 4)}`,
+      store,
+      partNumber,
+      size,
+      color,
+      expectedQty: isNaN(expectedQty) ? 1 : expectedQty,
+      actualQty: 0,
+    });
+  }
+
+  return { items: parsedItems, storeName: detectedStoreName };
+};
+
 export const CsvImporter: React.FC<CsvImporterProps> = ({
   onImport,
   onSelectStore,
@@ -109,141 +255,6 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
       }
     }
     return text;
-  };
-
-  // Helper to parse CSV text into InspectionListItem array
-  const parseCsvText = (text: string, defaultFileName: string = ""): { items: InspectionListItem[]; storeName: string } => {
-    const rawLines = text.split(/\r?\n/).map((line) => line.trim());
-    
-    // Check line 2 for store info like "納品先,211:北エリア（店舗名）"
-    let storeFromLine2 = "";
-    if (rawLines.length > 1) {
-      const line2Cols = rawLines[1].split(",");
-      if (line2Cols.length >= 2 && line2Cols[1]?.trim()) {
-        storeFromLine2 = line2Cols[1].trim();
-      }
-    }
-
-    // Find header line (typically 3rd non-empty line)
-    let headerLineIndex = 2;
-    let headerLine = rawLines[headerLineIndex];
-
-    if (!headerLine || headerLine.replace(/,/g, "").trim().length === 0) {
-      const indices: number[] = [];
-      for (let i = 0; i < rawLines.length; i++) {
-        if (rawLines[i].replace(/,/g, "").trim().length > 0) {
-          indices.push(i);
-        }
-      }
-      if (indices.length >= 3) {
-        headerLineIndex = indices[2];
-        headerLine = rawLines[headerLineIndex];
-      }
-    }
-
-    if (!headerLine) {
-      return { items: [], storeName: "" };
-    }
-
-    const separator = text.includes("\t") ? "\t" : ",";
-
-    const parseCSVLine = (line: string): string[] => {
-      const result: string[] = [];
-      let current = "";
-      let inQuotes = false;
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        if (char === '"') {
-          inQuotes = !inQuotes;
-        } else if (char === separator && !inQuotes) {
-          result.push(current.trim().replace(/^"|"$/g, ""));
-          current = "";
-        } else {
-          current += char;
-        }
-      }
-      result.push(current.trim().replace(/^"|"$/g, ""));
-      return result;
-    };
-
-    const headers = parseCSVLine(headerLine).map((h) => h.trim().toLowerCase());
-
-    let storeIdx = headers.findIndex((h) => h === "店舗名" || h === "店名" || h === "店舗名（漢字）");
-    if (storeIdx === -1) storeIdx = headers.findIndex((h) => h.includes("店舗名") || h.includes("店名"));
-    if (storeIdx === -1) storeIdx = headers.findIndex((h) => (h.includes("店舗") && !h.includes("コード") && !h.includes("cd")) || h.includes("店") || h.includes("store"));
-    if (storeIdx === -1) storeIdx = headers.findIndex((h) => h.includes("店舗"));
-
-    let partNumIdx = headers.findIndex((h) => h === "品番" || h === "型番" || h === "メーカー品番");
-    if (partNumIdx === -1) partNumIdx = headers.findIndex((h) => h.includes("品番") || h.includes("型番") || h.includes("商品") || h.includes("コード"));
-
-    let sizeIdx = headers.findIndex((h) => h === "サイズ" || h === "サイズ名" || h === "size");
-    if (sizeIdx === -1) sizeIdx = headers.findIndex((h) => h.includes("サイズ") || h.includes("寸法") || h.includes("size"));
-
-    let colorIdx = headers.findIndex((h) => h === "カラー" || h === "カラー名" || h === "color");
-    if (colorIdx === -1) colorIdx = headers.findIndex((h) => h.includes("カラー") || h.includes("色") || h.includes("color"));
-
-    let qtyIdx = headers.findIndex((h) => h === "枚数" || h === "数量" || h === "予定数" || h === "予定数量");
-    if (qtyIdx === -1) qtyIdx = headers.findIndex((h) => h.includes("枚数") || h.includes("予定") || h.includes("数量") || h.includes("個数") || h.includes("qty"));
-
-    if (headers.length >= 20) {
-      if (storeIdx === -1 || headers[storeIdx]?.includes("コード")) storeIdx = 20;
-      if (partNumIdx === -1) partNumIdx = 7;
-      if (colorIdx === -1) colorIdx = 8;
-      if (sizeIdx === -1) sizeIdx = 9;
-      if (qtyIdx === -1) qtyIdx = 11;
-    }
-
-    if (storeIdx === -1) storeIdx = 0;
-    if (partNumIdx === -1) partNumIdx = 1;
-    if (sizeIdx === -1) sizeIdx = 2;
-    if (colorIdx === -1) colorIdx = 3;
-    if (qtyIdx === -1) qtyIdx = 4;
-
-    const parsedItems: InspectionListItem[] = [];
-    let detectedStoreName = storeFromLine2;
-
-    // Try extracting store number from filename e.g. "211店別納品一覧表.CSV"
-    const matchStoreNumInFile = defaultFileName.match(/^(\d{3})/);
-    let storePrefix = matchStoreNumInFile ? matchStoreNumInFile[1] : "";
-
-    for (let i = headerLineIndex + 1; i < rawLines.length; i++) {
-      const line = rawLines[i];
-      if (!line || line.replace(/,/g, "").trim().length === 0) continue;
-
-      const cols = parseCSVLine(line);
-      if (cols.length <= Math.max(storeIdx, partNumIdx, sizeIdx, colorIdx, qtyIdx)) continue;
-
-      let store = cols[storeIdx]?.trim() || detectedStoreName || "共通";
-      
-      // If store is just digits or needs formatting
-      if (storePrefix && !store.startsWith(storePrefix)) {
-        store = `${storePrefix}:${store}`;
-      }
-
-      if (!detectedStoreName) detectedStoreName = store;
-
-      const partNumber = cols[partNumIdx]?.trim() || "";
-      const size = cols[sizeIdx]?.trim() || "フリー";
-      const color = cols[colorIdx]?.trim() || "アソート";
-      const qtyStr = cols[qtyIdx]?.trim() || "1";
-      const expectedQty = parseInt(qtyStr, 10);
-
-      if (!partNumber || partNumber === "品番" || partNumber.includes("メーカー") || partNumber.includes("コード")) {
-        continue;
-      }
-
-      parsedItems.push({
-        id: `csv_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 4)}`,
-        store,
-        partNumber,
-        size,
-        color,
-        expectedQty: isNaN(expectedQty) ? 1 : expectedQty,
-        actualQty: 0,
-      });
-    }
-
-    return { items: parsedItems, storeName: detectedStoreName };
   };
 
   // Handle single or multiple file uploads
@@ -372,13 +383,20 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
   const currentExpectedFileName = `${folderPath.endsWith("\\") || folderPath.endsWith("/") ? folderPath : folderPath + "\\"}${targetStoreCode}店別納品一覧表.CSV`;
 
   const downloadSampleCsv = () => {
-    const csvContent = 
-`納品日,得意先商品コード,,,,,,メーカー品番,カラー,サイズ,,枚数,,,,,,,,店舗名
-2026/3/30,4527311856981,,,,,,10573,ブラック,110,,2,,,,,,,,211:北エリア
-2026/3/30,4527311856981,,,,,,10573,モカグレー,110,,63,,,,,,,,211:北エリア
-2026/3/30,4527311856677,,,,,,1793,アイボリー,130,,17,,,,,,,,211:北エリア
-2026/3/30,4527311856684,,,,,,1773,ブラック,120,,2,,,,,,,,211:北エリア
-2026/3/30,4527311865396,,,,,,3763-1,ピンク,120,,6,,,,,,,,211:北エリア
+    // Real 店別納品一覧表 exports carry two preamble lines ahead of the header, and
+    // parseCsvText looks for the header on the third line. The previous sample
+    // started straight at the header, so re-importing it parsed as empty.
+    const sampleCode = targetStoreCode.trim() || "211";
+    const sampleStore = `${sampleCode}:北エリア`;
+    const csvContent =
+`店別納品一覧表
+納品先,${sampleStore}
+納品日,得意先商品コード,,,,,,メーカー品番,カラー,サイズ,,枚数,,,,,,,,店舗名
+2026/3/30,4527311856981,,,,,,10573,ブラック,110,,2,,,,,,,,${sampleStore}
+2026/3/30,4527311856981,,,,,,10573,モカグレー,110,,63,,,,,,,,${sampleStore}
+2026/3/30,4527311856677,,,,,,1793,アイボリー,130,,17,,,,,,,,${sampleStore}
+2026/3/30,4527311856684,,,,,,1773,ブラック,120,,2,,,,,,,,${sampleStore}
+2026/3/30,4527311865396,,,,,,3763-1,ピンク,120,,6,,,,,,,,${sampleStore}
 `;
     const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
