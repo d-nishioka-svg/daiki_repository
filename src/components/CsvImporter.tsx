@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   Upload,
   FileSpreadsheet,
@@ -22,6 +22,7 @@ interface CsvImporterProps {
   currentlyLoadedCount: number;
   currentlyLoadedStoresCount: number;
   selectedStore: string;
+  inspectionList: InspectionListItem[];
 }
 
 interface CachedFileInfo {
@@ -36,6 +37,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
   currentlyLoadedCount,
   currentlyLoadedStoresCount,
   selectedStore,
+  inspectionList,
 }) => {
   // Network folder path & store code state
   const [folderPath, setFolderPath] = useState<string>(() => {
@@ -43,8 +45,38 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
   });
   const [targetStoreCode, setTargetStoreCode] = useState<string>("211");
   
-  // Multi-CSV file cache map: storeCode -> file contents or parsed items
+  // Multi-CSV file cache map: storeCode -> file contents or parsed items.
+  // Only holds files picked during this session; it is intentionally not persisted.
   const [loadedFilesCache, setLoadedFilesCache] = useState<Record<string, CachedFileInfo>>({});
+
+  // Store code -> store info derived from the master list, which IS persisted to
+  // localStorage by App. loadedFilesCache is empty after a page reload, so this is
+  // what keeps store switching working without re-picking the CSV files.
+  const storeGroups = useMemo(() => {
+    const groups: Record<string, { storeName: string; count: number }> = {};
+    inspectionList.forEach((item) => {
+      const store = (item.store || "").trim();
+      if (!store) return;
+      // Store names come through as "211:北エリア", so the leading digits are the code
+      const codeMatch = store.match(/^(\d{3})/);
+      const key = codeMatch ? codeMatch[1] : store;
+      if (!groups[key]) {
+        groups[key] = { storeName: store, count: 0 };
+      }
+      groups[key].count += 1;
+    });
+    return groups;
+  }, [inspectionList]);
+
+  // Every store the operator can switch to right now: files loaded this session
+  // take precedence, and the persisted master list fills in the rest.
+  const switchableStores = useMemo(() => {
+    const merged: Record<string, { storeName: string; count: number }> = { ...storeGroups };
+    (Object.entries(loadedFilesCache) as [string, CachedFileInfo][]).forEach(([code, file]) => {
+      merged[code] = { storeName: file.storeName, count: file.items.length };
+    });
+    return Object.entries(merged).sort(([a], [b]) => a.localeCompare(b));
+  }, [storeGroups, loadedFilesCache]);
 
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -309,13 +341,22 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
       return;
     }
 
+    // Then the persisted master list, so switching still works after a reload
+    const group = storeGroups[cleanCode];
+    if (group && onSelectStore) {
+      onSelectStore(group.storeName);
+      setSuccess(`「${cleanCode}店 (${group.storeName})」の検品リスト（${group.count}件）に切り替えました。`);
+      return;
+    }
+
     // Try finding in currently loaded items by matching store name or code
     // E.g. store is "211:北エリア" or "211"
-    const matchingItems = (Object.values(loadedFilesCache) as CachedFileInfo[])
-      .flatMap((c) => c.items)
-      .filter(
-        (i) => i.store.startsWith(cleanCode) || i.store.includes(cleanCode)
-      );
+    const matchingItems = [
+      ...(Object.values(loadedFilesCache) as CachedFileInfo[]).flatMap((c) => c.items),
+      ...inspectionList,
+    ].filter(
+      (i) => i.store.startsWith(cleanCode) || i.store.includes(cleanCode)
+    );
 
     if (matchingItems.length > 0 && onSelectStore) {
       const foundStoreName = matchingItems[0].store;
@@ -410,7 +451,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
           <div className="lg:col-span-7 space-y-1.5">
             <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
               <Folder className="w-3.5 h-3.5 text-blue-400" />
-              対象フォルダパス (ネットワーク共有パス)
+              対象フォルダパス（控え用メモ）
             </label>
             <input
               type="text"
@@ -419,6 +460,9 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
               placeholder="\\192.0.1.10\e\CSV\"
               className="w-full bg-slate-800 border border-slate-700 focus:border-blue-500 rounded-lg px-3 py-2 text-xs md:text-sm font-mono text-slate-100 focus:outline-none transition-all"
             />
+            <p className="text-[10px] text-slate-400 leading-relaxed">
+              ※ブラウザの制約上、このパスから自動でCSVを読み込むことはできません。実際の読み込みは下部の【CSVフォルダを一括選択】から行ってください。
+            </p>
           </div>
 
           {/* Store Code Input (3 Digits) */}
@@ -521,16 +565,16 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
       )}
 
       {/* Loaded Stores Fast Switch Badges (If multi CSVs loaded) */}
-      {Object.keys(loadedFilesCache).length > 0 && (
+      {switchableStores.length > 0 && (
         <div className="mb-5 p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
           <div className="text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-blue-600" />
-            一括読み込み済み店舗一覧 ({Object.keys(loadedFilesCache).length}店舗):
+            切替可能な店舗一覧 ({switchableStores.length}店舗):
             <span className="text-[10px] text-slate-400 font-normal">（クリックでその店舗の検品に切り替え可能）</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(Object.entries(loadedFilesCache) as [string, CachedFileInfo][]).map(([codeKey, fileData]) => {
-              const isSelected = selectedStore.includes(codeKey) || selectedStore === fileData.storeName;
+            {switchableStores.map(([codeKey, storeData]) => {
+              const isSelected = selectedStore.includes(codeKey) || selectedStore === storeData.storeName;
               return (
                 <button
                   key={codeKey}
@@ -540,10 +584,11 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
                       ? "bg-emerald-600 text-white shadow-xs scale-105 ring-2 ring-emerald-300"
                       : "bg-white text-slate-700 border border-slate-200 hover:border-slate-350 hover:bg-slate-100"
                   }`}
+                  title={storeData.storeName}
                 >
-                  <span>{codeKey}店</span>
+                  <span>{/^\d{3}$/.test(codeKey) ? `${codeKey}店` : codeKey}</span>
                   <span className={`text-[10px] font-normal ${isSelected ? "text-emerald-100" : "text-slate-400"}`}>
-                    ({fileData.items.length}件)
+                    ({storeData.count}件)
                   </span>
                 </button>
               );

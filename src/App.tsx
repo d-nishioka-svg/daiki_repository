@@ -1253,6 +1253,7 @@ export default function App() {
               currentlyLoadedCount={inspectionList.length}
               currentlyLoadedStoresCount={Array.from(new Set(inspectionList.map(item => item.store))).length}
               selectedStore={selectedStore}
+              inspectionList={inspectionList}
             />
 
             <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-6">
