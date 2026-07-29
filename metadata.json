@@ -1,0 +1,10 @@
+{
+  "name": "Remix: Tag Extractor",
+  "description": "Extracts part numbers, sizes, and colors from clothing tags instantly via camera or image upload and writes them to a Google Spreadsheet.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
