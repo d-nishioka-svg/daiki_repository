@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { User } from "firebase/auth";
 import { initAuth, googleSignIn, logout } from "./lib/auth";
-import { appendRow } from "./lib/sheets";
+import { appendRow, isAuthError } from "./lib/sheets";
 import { TagData, ScanHistoryEntry, SpreadsheetInfo, InspectionListItem } from "./types";
 import { SheetSelector } from "./components/SheetSelector";
 import { CameraStream } from "./components/CameraStream";
@@ -74,6 +74,11 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState<boolean>(true);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
+  // Google OAuth access tokens last about an hour and nothing refreshes them, so
+  // mid-shift every save starts failing. Failed rows are excluded from the counts,
+  // which made the ledger quietly stop advancing while the header still claimed
+  // the sheet was connected. Surface it and offer an in-place re-auth.
+  const [tokenExpired, setTokenExpired] = useState<boolean>(false);
 
   // App settings state
   const [selectedSheet, setSelectedSheet] = useState<SpreadsheetInfo | null>(
@@ -474,11 +479,44 @@ export default function App() {
     }
   };
 
+  // Mint a fresh OAuth token without signing out, so an hour-old token does not
+  // cost the operator the scan counts held in this session. Google normally
+  // completes this without showing the consent screen again.
+  const handleReauth = async () => {
+    setIsLoggingIn(true);
+    setGeneralError(null);
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setUser(result.user);
+        setToken(result.accessToken);
+        setTokenExpired(false);
+        setSuccessMessage(
+          "スプレッドシート接続を更新しました。保存に失敗した項目は履歴の「再試行」から保存できます。",
+        );
+      }
+    } catch (err) {
+      console.error("Re-authentication failed:", err);
+      setGeneralError(
+        "再接続に失敗しました。右上のSIGN OUTからサインインし直してください。",
+      );
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // A Sheets write rejected with 401/403 means the token died rather than the data
+  // being bad, and that needs different wording and a different remedy.
+  const noteSaveFailure = (err: unknown) => {
+    if (isAuthError(err)) setTokenExpired(true);
+  };
+
   const handleLogout = async () => {
     try {
       await logout();
       setUser(null);
       setToken(null);
+      setTokenExpired(false);
       setNeedsAuth(true);
       setSelectedSheet(null);
       setScanResult(null);
@@ -642,6 +680,7 @@ export default function App() {
                 e.id === targetId ? { ...e, status: "saved" } : e,
               ),
             );
+            setTokenExpired(false);
             setSuccessMessage(
               `「${pNum || "製品"}」情報がスプレッドシートへ自動保存されました。`,
             );
@@ -661,7 +700,12 @@ export default function App() {
                   : e,
               ),
             );
-            setGeneralError(`自動保存に失敗しました: ${autoSaveErr.message}`);
+            noteSaveFailure(autoSaveErr);
+            setGeneralError(
+              isAuthError(autoSaveErr)
+                ? "Googleの接続の有効期限が切れたため保存できませんでした。下の「接続を更新」から再接続してください。"
+                : `自動保存に失敗しました: ${autoSaveErr.message}`,
+            );
           }
         } else {
           // Soft review flow (batchModeEnabled is false)
@@ -837,6 +881,7 @@ export default function App() {
         prev.map((e) => (e.id === targetEntryId ? { ...e, status: "saved" } : e)),
       );
 
+      setTokenExpired(false);
       setSuccessMessage(
         "スプレッドシートへ書き込みが正常に完了しました。 / Exported successfully.",
       );
@@ -856,8 +901,11 @@ export default function App() {
             : e,
           ),
         );
+        noteSaveFailure(err);
         setGeneralError(
-          `Export failed: ${err.message || "Unable to update Google Sheet row."}`,
+          isAuthError(err)
+            ? "Googleの接続の有効期限が切れたため保存できませんでした。下の「接続を更新」から再接続してください。"
+            : `Export failed: ${err.message || "Unable to update Google Sheet row."}`,
         );
       } finally {
         setIsSaving(false);
@@ -890,6 +938,7 @@ export default function App() {
       setHistory((prev) =>
         prev.map((e) => (e.id === entry.id ? { ...e, status: "saved" } : e)),
       );
+      setTokenExpired(false);
       setSuccessMessage(
         `「${entry.partNumber || "製品"}」情報をスプレッドシートに保存しました。`,
       );
@@ -902,8 +951,11 @@ export default function App() {
             : e,
         ),
       );
+      noteSaveFailure(err);
       setGeneralError(
-        `保存に失敗しました: ${err.message || "Unable to update Google Sheet."}`,
+        isAuthError(err)
+          ? "Googleの接続の有効期限が切れたため保存できませんでした。下の「接続を更新」から再接続してください。"
+          : `保存に失敗しました: ${err.message || "Unable to update Google Sheet."}`,
       );
     }
   };
@@ -1113,9 +1165,19 @@ export default function App() {
               SYNC STATE:
             </span>
             <span
-              className={`${selectedSheet ? "text-green-700 font-semibold" : "text-amber-700 font-semibold"}`}
+              className={`${
+                tokenExpired
+                  ? "text-red-700 font-semibold"
+                  : selectedSheet
+                    ? "text-green-700 font-semibold"
+                    : "text-amber-700 font-semibold"
+              }`}
             >
-              {selectedSheet ? "Sheets Connected" : "Awaiting Sheet Selection"}
+              {tokenExpired
+                ? "Session Expired"
+                : selectedSheet
+                  ? "Sheets Connected"
+                  : "Awaiting Sheet Selection"}
             </span>
           </div>
 
@@ -1213,6 +1275,33 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* Expired Google session: saving is broken until the token is renewed, and
+            failed rows are excluded from the counts, so say so instead of letting
+            the ledger quietly stop advancing. */}
+        {tokenExpired && (
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="uppercase tracking-wider text-[11px] font-bold text-amber-800">
+                  Google接続の有効期限切れ
+                </p>
+                <p className="text-xs text-amber-700 font-normal leading-relaxed">
+                  スプレッドシートへの保存ができない状態です。検品済の数は保持されていますので、接続を更新してから履歴の「再試行」で保存してください。
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleReauth}
+              disabled={isLoggingIn}
+              className="shrink-0 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-extrabold text-xs rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoggingIn ? "animate-spin" : ""}`} />
+              接続を更新
+            </button>
+          </div>
+        )}
 
         {/* Status Messaging Area */}
         {(generalError || successMessage) && (

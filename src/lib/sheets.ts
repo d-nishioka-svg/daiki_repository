@@ -1,5 +1,20 @@
 import { SpreadsheetInfo } from "../types";
 
+/** Carries the HTTP status so callers can tell an expired token from a real failure. */
+export class SheetsApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "SheetsApiError";
+    this.status = status;
+  }
+}
+
+/** True when the Google OAuth access token has expired or was revoked. */
+export const isAuthError = (err: unknown): boolean =>
+  err instanceof SheetsApiError && (err.status === 401 || err.status === 403);
+
 /**
  * Creates a brand new Google Spreadsheet for Tag Extractor and initializes it with headers
  */
@@ -100,28 +115,44 @@ export const appendRow = async (
     }
   );
 
-  if (!response.ok) {
-    const rawRangeStr = `A:${colLetter}`;
-    // Falls back to scanning without explicit sheet name if default Sheet1 isn't present
-    const fallbackResponse = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${rawRangeStr}:append?valueInputOption=USER_ENTERED`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          range: rawRangeStr,
-          majorDimension: "ROWS",
-          values: [rowValues],
-        }),
-      }
-    );
+  if (response.ok) return;
 
-    if (!fallbackResponse.ok) {
-      const errText = await fallbackResponse.text();
-      throw new Error(`Failed to append data to spreadsheet: ${errText}`);
+  // Only a rejected range is worth retrying: the target sheet may not be called
+  // "Sheet1" (a Japanese spreadsheet's first tab is シート1), and an unqualified
+  // range defaults to the first sheet. Retrying on 401/403/429 as this used to do
+  // re-sent a write that had already been rejected for auth or quota reasons,
+  // doubled the request rate exactly when being throttled, and reported the second
+  // response's error instead of the real cause.
+  if (response.status !== 400 && response.status !== 404) {
+    const errText = await response.text();
+    throw new SheetsApiError(
+      response.status,
+      `Failed to append data to spreadsheet: ${errText}`
+    );
+  }
+
+  const rawRangeStr = `A:${colLetter}`;
+  const fallbackResponse = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${rawRangeStr}:append?valueInputOption=USER_ENTERED`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        range: rawRangeStr,
+        majorDimension: "ROWS",
+        values: [rowValues],
+      }),
     }
+  );
+
+  if (!fallbackResponse.ok) {
+    const errText = await fallbackResponse.text();
+    throw new SheetsApiError(
+      fallbackResponse.status,
+      `Failed to append data to spreadsheet: ${errText}`
+    );
   }
 };
