@@ -107,10 +107,11 @@ export default function App() {
   // appending a second one for the same physical garment.
   const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
 
-  // Deduplication state for continuous scanning flow
-  const [lastScannedPartNumber, setLastScannedPartNumber] = useState<
-    string | null
-  >(null);
+  // Deduplication state for continuous scanning flow. Keyed on part+size+colour so
+  // a different colour of the same style is not mistaken for a re-read.
+  const [lastScannedIdentity, setLastScannedIdentity] = useState<string | null>(
+    null,
+  );
   const [lastScanTime, setLastScanTime] = useState<number>(0);
 
   // Scanning engine state
@@ -342,6 +343,21 @@ export default function App() {
     const normS = (size || "").trim().toUpperCase();
     const normC = (color || "").trim().toUpperCase();
 
+    // The table renders a blank size or colour as "ー", but the history entry it
+    // has to match still holds the empty string, so accept either spelling.
+    const matchesAdjustTarget = (entry: ScanHistoryEntry) => {
+      const entrySize = (entry.size || "").trim().toUpperCase();
+      const entryColor = (entry.color || "").trim().toUpperCase();
+      const sizeMatches = entrySize === normS || (!entrySize && normS === "ー");
+      const colorMatches = entryColor === normC || (!entryColor && normC === "ー");
+      return (
+        entry.store === selectedStore &&
+        entry.partNumber.trim().toUpperCase() === normP &&
+        sizeMatches &&
+        colorMatches
+      );
+    };
+
     if (increment) {
       const timestamp = new Date().toLocaleTimeString([], {
         hour: "2-digit",
@@ -354,29 +370,43 @@ export default function App() {
         partNumber: partNumber,
         size: size || "ー",
         color: color || "ー",
-        status: "saved",
+        // A manual bump writes nothing to the spreadsheet, so it must not claim to
+        // be synced. "pending" still counts towards the ledger and the history feed
+        // offers a 保存 button to push it to the sheet.
+        status: "pending",
         store: selectedStore,
       };
       setHistory((prev) => [newEntry, ...prev]);
-      setSuccessMessage(`「${partNumber} (${size} / ${color})」の検品数を1増やしました。`);
+      setSuccessMessage(
+        `「${partNumber} (${size} / ${color})」の検品数を1増やしました。スプレッドシートへは履歴の「保存」から反映してください。`,
+      );
     } else {
-      const indexToRemove = history.findIndex(entry => {
-        return (
-          entry.store === selectedStore &&
-          entry.partNumber.trim().toUpperCase() === normP &&
-          (entry.size || "").trim().toUpperCase() === normS &&
-          (entry.color || "").trim().toUpperCase() === normC &&
-          entry.status !== "failed" &&
-          entry.status !== "extracting"
-        );
-      });
+      // Resolve the row inside the updater: computing an index against the closure's
+      // history and applying it to a later array deleted a different SKU's row
+      // whenever a scan prepended an entry in the same batch. Prefer a row that was
+      // never written to the sheet so the local count cannot drift below it, and
+      // never touch one whose append is still in flight.
+      const removable = (entry: ScanHistoryEntry) =>
+        matchesAdjustTarget(entry) &&
+        entry.status !== "failed" &&
+        entry.status !== "extracting" &&
+        entry.status !== "saving";
 
-      if (indexToRemove !== -1) {
-        setHistory((prev) => prev.filter((_, idx) => idx !== indexToRemove));
-        setSuccessMessage(`「${partNumber} (${size} / ${color})」の検品数を1減らしました。`);
-      } else {
+      if (!history.some(removable)) {
         setGeneralError("減らせる検品済レコードが見つかりません。");
+        return;
       }
+
+      setHistory((prev) => {
+        const candidates = prev.filter(removable);
+        if (candidates.length === 0) return prev;
+        const target =
+          candidates.find((entry) => entry.status === "pending") ?? candidates[0];
+        return prev.filter((entry) => entry !== target);
+      });
+      setSuccessMessage(
+        `「${partNumber} (${size} / ${color})」の検品数を1減らしました。`,
+      );
     }
   };
 
@@ -577,19 +607,25 @@ export default function App() {
       const sz = (result.size || "").trim();
       const col = (result.color || "").trim();
 
-      // Proposal 4: Deduplication safety loop to prevent duplicate entries holding the same tag
+      // Guards against the auto-scan loop reading the same physical tag twice while
+      // the camera lingers on it. It used to compare the part number alone over a
+      // 12 second window, which rejected the very next garment whenever it shared a
+      // part number — a different colour or size of the same style, which the
+      // project's own sample CSV contains — and made a row of 63 identical pieces
+      // take a minimum of 12.6 minutes. Compare the full identity and keep the
+      // window short; CameraStream separately requires the frame to change before
+      // it re-arms, which is what actually stops a re-read of the same tag.
+      const scanIdentity = `${pNum}|${sz}|${col}`.toUpperCase();
       if (
         autoScanEnabled &&
         pNum &&
-        pNum === lastScannedPartNumber &&
-        Date.now() - lastScanTime < 12000
+        scanIdentity === lastScannedIdentity &&
+        Date.now() - lastScanTime < 2500
       ) {
-        console.log(
-          `[Deduplication] Blocked duplicate read for part number: ${pNum}`,
-        );
+        console.log(`[Deduplication] Blocked duplicate read for: ${scanIdentity}`);
         setHistory((prev) => prev.filter((e) => e.id !== targetId));
         setSuccessMessage(
-          `自動重複防止: タグ「${pNum}」は最近すでに読み取られました。別の製品をスキャンしてください。`,
+          `自動重複防止: 同じタグ「${pNum}（${sz || "ー"} / ${col || "ー"}）」を連続で読み取ったため1件にまとめました。`,
         );
         setIsExtracting(false);
         return;
@@ -635,7 +671,7 @@ export default function App() {
         });
 
         if (pNum) {
-          setLastScannedPartNumber(pNum);
+          setLastScannedIdentity(scanIdentity);
           setLastScanTime(Date.now());
         }
 
