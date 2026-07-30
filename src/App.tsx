@@ -31,6 +31,28 @@ import {
   Trash2,
 } from "lucide-react";
 
+// The desktop and mobile workspaces were both mounted and merely hidden with CSS
+// (`hidden lg:grid` / `block lg:hidden`), so two CameraStream instances opened the
+// camera and each ran its own auto-capture loop. Render only the visible one.
+// 1024px is Tailwind's `lg` breakpoint.
+const useIsDesktop = () => {
+  const query = "(min-width: 1024px)";
+  const [isDesktop, setIsDesktop] = useState<boolean>(() =>
+    typeof window === "undefined" ? true : window.matchMedia(query).matches,
+  );
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(query);
+    const handleChange = (event: MediaQueryListEvent) =>
+      setIsDesktop(event.matches);
+    setIsDesktop(mediaQuery.matches);
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
+
+  return isDesktop;
+};
+
 // A localStorage write must never take the app down. These run inside effects, so
 // a QuotaExceededError propagates out of the commit phase and unmounts the React
 // root: the operator gets a blank screen and loses the session mid-inspection.
@@ -47,6 +69,7 @@ const persist = (key: string, value: string | null) => {
 };
 
 export default function App() {
+  const isDesktop = useIsDesktop();
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState<boolean>(true);
@@ -1439,7 +1462,8 @@ export default function App() {
 
             {/* WORKSPACE AREA */}
             {/* DESKTOP VIEWPORT: Static Bento Grid layout (Full View) */}
-            <div className="hidden lg:grid grid-cols-12 gap-8">
+            {isDesktop && (
+            <div className="grid grid-cols-12 gap-8">
               {/* Left Column configuration */}
               <div className="lg:col-span-4 flex flex-col gap-6">
                 <SheetSelector
@@ -1547,10 +1571,12 @@ export default function App() {
                 />
               </div>
             </div>
+            )}
 
             {/* SMARTPHONE / TABLET VIEWPORT: Dynamic tab-render container */}
-            <div className="block lg:hidden">
-              <div className="lg:hidden flex bg-white rounded-xl shadow-xs p-1 gap-1 border border-slate-200 mb-6 font-sans">
+            {!isDesktop && (
+            <div>
+              <div className="flex bg-white rounded-xl shadow-xs p-1 gap-1 border border-slate-200 mb-6 font-sans">
                 <button
                   onClick={() => setMobileTab("settings")}
                   className={`flex-1 py-2 px-0.5 text-center font-bold text-xs rounded-lg flex flex-col items-center justify-center gap-1 transition-all outline-none cursor-pointer ${
@@ -1751,6 +1777,7 @@ export default function App() {
                 </div>
               )}
             </div>
+            )}
           </div>
         )}
 
