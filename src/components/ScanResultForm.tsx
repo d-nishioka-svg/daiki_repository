@@ -4,7 +4,8 @@ import { TagData, SpreadsheetInfo } from "../types";
 
 interface ScanResultFormProps {
   initialData: TagData | null;
-  onSave: (finalData: TagData) => Promise<void>;
+  /** Resolves true only when the row actually reached the spreadsheet. */
+  onSave: (finalData: TagData) => Promise<boolean>;
   onReset: () => void;
   selectedSheet: SpreadsheetInfo | null;
   isSaving: boolean;
@@ -38,19 +39,26 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
     }
   }, [initialData]);
 
+  const isFormValid = partNumber.trim() !== "" || size.trim() !== "" || color.trim() !== "";
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!selectedSheet) return;
+    // The button carries these guards, but iOS Safari also submits the form on the
+    // keyboard's Go key, which used to bypass them and could append a blank row.
+    if (!selectedSheet || !isFormValid || isSaving) return;
 
-    setSubmitted(true);
-    await onSave({
+    // Only mark submitted once the save reported success. Setting it up front meant
+    // the confirmation was shown exclusively on failure: on success the parent
+    // clears scanResult and this block unmounts before it can be seen, while on
+    // failure the form stayed put displaying "保存完了" next to the error banner.
+    const saved = await onSave({
       partNumber: partNumber.trim(),
       size: size.trim(),
       color: color.trim(),
     });
+    setSubmitted(saved);
   };
 
-  const isFormValid = partNumber.trim() !== "" || size.trim() !== "" || color.trim() !== "";
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 flex flex-col h-full justify-between">

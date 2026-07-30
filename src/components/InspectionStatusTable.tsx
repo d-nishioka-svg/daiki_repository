@@ -116,6 +116,9 @@ export const InspectionStatusTable: React.FC<InspectionStatusTableProps> = ({
                   const uninspectedQty = Math.max(0, changedQty - row.actualQty);
                   const isMatch = row.actualQty === changedQty;
                   const isZero = row.actualQty === 0;
+                  // 未検品数 is clamped at 0, so an over-scanned row used to render
+                  // as "残有(0)" — flagged incomplete while claiming nothing is left.
+                  const overQty = Math.max(0, row.actualQty - changedQty);
 
                   return (
                     <tr key={row.id} className="h-11 hover:bg-slate-50/60 transition-colors font-medium">
@@ -148,8 +151,15 @@ export const InspectionStatusTable: React.FC<InspectionStatusTableProps> = ({
                           min="0"
                           value={changedQty}
                           onChange={(e) => {
-                            const val = parseInt(e.target.value, 10);
-                            onQtyOverrideChange(row.id, isNaN(val) ? 0 : val);
+                            // Clearing the field to retype used to persist 0
+                            // immediately, which made an untouched row read OK.
+                            // Keep the current value until a real number arrives,
+                            // and never let a typed "-" produce a negative total.
+                            const raw = e.target.value.trim();
+                            if (raw === "") return;
+                            const val = parseInt(raw, 10);
+                            if (isNaN(val)) return;
+                            onQtyOverrideChange(row.id, Math.max(0, val));
                           }}
                           className="w-12 bg-white hover:bg-slate-50 border border-slate-200 rounded-md text-center py-1 font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-xs transition-all"
                         />
@@ -193,6 +203,10 @@ export const InspectionStatusTable: React.FC<InspectionStatusTableProps> = ({
                         {isMatch ? (
                           <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-50 text-emerald-700 tracking-wider">
                             OK
+                          </span>
+                        ) : overQty > 0 ? (
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-700 tracking-wider">
+                            超過(+{overQty})
                           </span>
                         ) : isZero ? (
                           <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-400">

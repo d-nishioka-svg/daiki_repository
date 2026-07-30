@@ -817,10 +817,10 @@ export default function App() {
   };
 
   // 4. Persistence Handler for Exporting Form Input to Sheets
-  const handleSaveToSheet = async (finalData: TagData) => {
+  const handleSaveToSheet = async (finalData: TagData): Promise<boolean> => {
     if (!token || !selectedSheet) {
       setGeneralError("Authentication or target spreadsheet is missing.");
-      return;
+      return false;
     }
 
     // The scan already created a row and left it "pending", and pending rows are
@@ -838,7 +838,7 @@ export default function App() {
       setPendingEntryId(null);
       setMobileTab("scan");
       setSuccessMessage("この項目はすでに保存済みです。");
-      return;
+      return true;
     }
 
     setIsSaving(true);
@@ -910,6 +910,7 @@ export default function App() {
 
       // Return back to uploader/live camera tab on mobile for continuous scanning workflow
       setMobileTab("scan");
+      return true;
     } catch (err: any) {
       console.error("Save to sheet failed:", err);
       setHistory((prev) =>
@@ -925,6 +926,7 @@ export default function App() {
             ? "Googleの接続の有効期限が切れたため保存できませんでした。下の「接続を更新」から再接続してください。"
             : `Export failed: ${err.message || "Unable to update Google Sheet row."}`,
         );
+        return false;
       } finally {
         setIsSaving(false);
       }
@@ -980,8 +982,11 @@ export default function App() {
 
   const handleClearHistory = () => {
     setConfirmModal({
-      title: "履歴クリアの確認",
-      message: "セッション履歴のスキャンログをクリアしても大丈夫ですか？ (Googleスプレッドシート本体のデータは保護され、削除されません)",
+      title: "全店舗の履歴クリアの確認",
+      // This wipes every store, not just the selected one, and the counts it
+      // destroys are the shift's inspection totals. The old wording said only
+      // "セッション履歴" and gave no hint of the scope.
+      message: `全${new Set(history.map((e) => e.store)).size}店舗ぶん、合計${history.length}件のスキャン履歴をすべて削除し、各店舗の検品数を0に戻します。よろしいですか？ (Googleスプレッドシート本体のデータは削除されません。現在の店舗だけを消す場合は検品テーブルの「検品リセット」を使ってください)`,
       onConfirm: () => {
         setHistory([]);
         setConfirmModal(null);
