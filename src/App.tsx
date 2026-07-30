@@ -31,6 +31,21 @@ import {
   Trash2,
 } from "lucide-react";
 
+// A localStorage write must never take the app down. These run inside effects, so
+// a QuotaExceededError propagates out of the commit phase and unmounts the React
+// root: the operator gets a blank screen and loses the session mid-inspection.
+const persist = (key: string, value: string | null) => {
+  try {
+    if (value === null) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, value);
+    }
+  } catch (err) {
+    console.warn(`Could not persist "${key}" to localStorage:`, err);
+  }
+};
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -220,81 +235,74 @@ export default function App() {
 
   // Save selected spreadsheet coordinates to persistent client localstorage
   useEffect(() => {
-    if (selectedSheet) {
-      localStorage.setItem(
-        "tag_extractor_sheet",
-        JSON.stringify(selectedSheet),
-      );
-    } else {
-      localStorage.removeItem("tag_extractor_sheet");
-    }
+    persist(
+      "tag_extractor_sheet",
+      selectedSheet ? JSON.stringify(selectedSheet) : null,
+    );
   }, [selectedSheet]);
 
   // Save auto-save configuration state to localstorage
   useEffect(() => {
-    localStorage.setItem(
-      "tag_extractor_batchmode",
-      batchModeEnabled ? "true" : "false",
-    );
+    persist("tag_extractor_batchmode", batchModeEnabled ? "true" : "false");
   }, [batchModeEnabled]);
 
   // Save auto-scan configuration state to localstorage
   useEffect(() => {
-    localStorage.setItem(
-      "tag_extractor_autoscan",
-      autoScanEnabled ? "true" : "false",
-    );
+    persist("tag_extractor_autoscan", autoScanEnabled ? "true" : "false");
   }, [autoScanEnabled]);
 
   // Save history state to localstorage
   useEffect(() => {
     if (history.length > 0) {
-      localStorage.setItem("tag_extractor_history", JSON.stringify(history));
+      // previewImage is a base64 JPEG worth tens of KB per scan. Persisting it
+      // exhausted the ~5MB quota after a few dozen scans, and because the failed
+      // write also survives a reload the app could not be started again. The
+      // thumbnails stay in memory for the session; HistoryList already falls back
+      // to a placeholder icon for entries without one.
+      const withoutPreviews = history.map(
+        ({ previewImage, ...entry }) => entry,
+      );
+      persist("tag_extractor_history", JSON.stringify(withoutPreviews));
     } else {
-      localStorage.removeItem("tag_extractor_history");
+      persist("tag_extractor_history", null);
     }
   }, [history]);
 
   // Save inspection list configuration state to localstorage
   useEffect(() => {
-    if (inspectionList.length > 0) {
-      localStorage.setItem("tag_extractor_inspection_list", JSON.stringify(inspectionList));
-    } else {
-      localStorage.removeItem("tag_extractor_inspection_list");
-    }
+    persist(
+      "tag_extractor_inspection_list",
+      inspectionList.length > 0 ? JSON.stringify(inspectionList) : null,
+    );
   }, [inspectionList]);
 
   // Save selected store state to localstorage
   useEffect(() => {
-    if (selectedStore) {
-      localStorage.setItem("tag_extractor_selected_store", selectedStore);
-    } else {
-      localStorage.removeItem("tag_extractor_selected_store");
-    }
+    persist("tag_extractor_selected_store", selectedStore || null);
   }, [selectedStore]);
 
   // Save active workflow step to localstorage
   useEffect(() => {
-    localStorage.setItem("tag_extractor_step", workflowStep);
+    persist("tag_extractor_step", workflowStep);
   }, [workflowStep]);
 
   // Save retro settings to localstorage when they change
   useEffect(() => {
-    localStorage.setItem("tag_extractor_order_no", orderNo);
+    persist("tag_extractor_order_no", orderNo);
   }, [orderNo]);
 
   useEffect(() => {
-    localStorage.setItem("tag_extractor_packing_no", packingNo);
+    persist("tag_extractor_packing_no", packingNo);
   }, [packingNo]);
 
   useEffect(() => {
-    localStorage.setItem("tag_extractor_processing_date", processingDate);
+    persist("tag_extractor_processing_date", processingDate);
   }, [processingDate]);
 
   const handleQtyOverrideChange = (rowId: string, val: number) => {
     const updated = { ...changedQtyOverrides, [rowId]: val };
     setChangedQtyOverrides(updated);
-    localStorage.setItem("tag_extractor_changed_qty_overrides", JSON.stringify(updated));
+    persist("tag_extractor_changed_qty_overrides", JSON.stringify(updated));
   };
 
   const handleAdjustQty = (partNumber: string, size: string, color: string, increment: boolean) => {
