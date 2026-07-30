@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Camera, CameraOff, Sparkles, RefreshCw, Loader2, Target, CheckCircle2, Zap } from "lucide-react";
+import { playTone } from "../lib/audio";
 
 interface CameraStreamProps {
   onCapture: (base64: string, mimeType: string) => void;
@@ -41,42 +42,16 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
   const lastFrameDataRef = useRef<Float32Array | null>(null);
   const analysisCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastScanSuccessTimeRef = useRef<number>(0);
+  // Stability gauge kept in a ref as well, so the capture decision can be made
+  // synchronously in the interval instead of inside a state updater.
+  const stableRef = useRef<number>(0);
+  const isTriggeringRef = useRef<boolean>(false);
+  const awaitingSceneChangeRef = useRef<boolean>(false);
 
   // Play crisp synthesizer dual-beep on successful tag scan
   const playBeepSound = () => {
-    try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioContextClass) return;
-      const audioCtx = new AudioContextClass();
-      
-      // Clean high pitch beep 1
-      const osc1 = audioCtx.createOscillator();
-      const gain1 = audioCtx.createGain();
-      osc1.connect(gain1);
-      gain1.connect(audioCtx.destination);
-      osc1.type = "sine";
-      osc1.frequency.setValueAtTime(950, audioCtx.currentTime); // High chime pitch
-      gain1.gain.setValueAtTime(0.05, audioCtx.currentTime);
-      gain1.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
-      osc1.start(audioCtx.currentTime);
-      osc1.stop(audioCtx.currentTime + 0.08);
-
-      // Chime secondary ring 2
-      setTimeout(() => {
-        const osc2 = audioCtx.createOscillator();
-        const gain2 = audioCtx.createGain();
-        osc2.connect(gain2);
-        gain2.connect(audioCtx.destination);
-        osc2.type = "sine";
-        osc2.frequency.setValueAtTime(1250, audioCtx.currentTime); // Harmonized higher key
-        gain2.gain.setValueAtTime(0.05, audioCtx.currentTime);
-        gain2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
-        osc2.start(audioCtx.currentTime);
-        osc2.stop(audioCtx.currentTime + 0.12);
-      }, 75);
-    } catch (err) {
-      console.warn("Audio engagement blocked or unsupported by secure browser context", err);
-    }
+    playTone(950, 0.08, { gain: 0.05 });
+    playTone(1250, 0.12, { delay: 0.075, gain: 0.05 });
   };
 
   // Monitor scan success timestamps from parent component to fire successful scan triggers
@@ -233,10 +208,11 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
     const canvas = analysisCanvasRef.current;
     const ctx = canvas.getContext("2d");
 
-    let isTriggeringThisCycle = false;
+    // Re-arm whenever the loop restarts (a scan finishing flips isExtracting).
+    isTriggeringRef.current = false;
 
     const intervalId = setInterval(() => {
-      if (!videoRef.current || !ctx || isExtracting || disabled || isTriggeringThisCycle) {
+      if (!videoRef.current || !ctx || isExtracting || disabled || isTriggeringRef.current) {
         return;
       }
 
@@ -301,27 +277,42 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
         
         setScanStatusMsg((prev) => prev !== statusMessage ? statusMessage : prev);
 
-        let shouldCapture = false;
-        setStablePercent((prev) => {
-          if (isCameraSteady) {
-            // Rapidly ticks upwards (needs continuous stability for ~0.84 seconds instead of 1.1s for faster workflows)
-            const nextPercent = Math.min(prev + 34, 100);
-            if (nextPercent >= 100 && !isTriggeringThisCycle) {
-              isTriggeringThisCycle = true;
-              shouldCapture = true;
-              return 0; // Reset stabilization index
-            }
-            return nextPercent;
-          } else {
-            // Swiftly decay status if physical motion shaking is registered or tag is removed
-            const nextPercent = Math.max(prev - 35, 0);
-            return prev === nextPercent ? prev : nextPercent;
+        // After a capture, wait for the scene to actually change before letting the
+        // gauge climb again. Without this the gauge re-fills in three ticks while
+        // the camera is still pointed at the tag that was just read, which is what
+        // forced the parent into a long part-number-based duplicate block.
+        if (awaitingSceneChangeRef.current) {
+          if (!isCameraSteady) {
+            awaitingSceneChangeRef.current = false;
           }
-        });
-
-        if (shouldCapture) {
-          handleCapture();
+          stableRef.current = 0;
+          setStablePercent(0);
+          setScanStatusMsg((prev) =>
+            prev !== "次のタグに移してください" ? "次のタグに移してください" : prev,
+          );
+          return;
         }
+
+        // The capture decision is made here rather than inside a setState updater.
+        // React only runs an updater eagerly when no other update is pending on the
+        // fiber; otherwise it is deferred to the render phase, which left the
+        // trigger flag latched true with no capture ever fired — auto-scan died
+        // until the operator toggled it off and on.
+        const nextPercent = isCameraSteady
+          ? Math.min(stableRef.current + 34, 100)
+          : Math.max(stableRef.current - 35, 0);
+
+        if (isCameraSteady && nextPercent >= 100) {
+          isTriggeringRef.current = true;
+          awaitingSceneChangeRef.current = true;
+          stableRef.current = 0;
+          setStablePercent(0);
+          handleCapture();
+          return;
+        }
+
+        stableRef.current = nextPercent;
+        setStablePercent((prev) => (prev === nextPercent ? prev : nextPercent));
       } catch (err) {
         console.warn("Stabilization computation failed:", err);
       }
@@ -329,6 +320,7 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
 
     return () => {
       clearInterval(intervalId);
+      stableRef.current = 0;
       setStablePercent(0);
     };
   }, [activeStream, autoScanEnabled, disabled, isExtracting]);

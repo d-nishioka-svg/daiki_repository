@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { User } from "firebase/auth";
 import { initAuth, googleSignIn, logout } from "./lib/auth";
 import { appendRow, isAuthError } from "./lib/sheets";
+import { playTone } from "./lib/audio";
 import { TagData, ScanHistoryEntry, SpreadsheetInfo, InspectionListItem } from "./types";
 import { SheetSelector } from "./components/SheetSelector";
 import { CameraStream } from "./components/CameraStream";
@@ -127,46 +128,17 @@ export default function App() {
   // Session scanning history
   const [history, setHistory] = useState<ScanHistoryEntry[]>([]);
 
-  // Sound generator and state variables for cancel scan and modals
+  // Feedback tones. These go through the shared AudioContext in lib/audio: a fresh
+  // context per beep hit the browser's concurrent-context cap after a few scans
+  // and every sound went silently dead.
   const playWarningBeep = () => {
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const playTone = (freq: number, duration: number, delay: number) => {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.type = "sawtooth";
-        osc.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
-        gain.gain.setValueAtTime(0.12, audioCtx.currentTime + delay);
-        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + delay + duration);
-        osc.start(audioCtx.currentTime + delay);
-        osc.stop(audioCtx.currentTime + delay + duration);
-      };
-      playTone(440, 0.15, 0);
-      playTone(330, 0.25, 0.1);
-    } catch (e) {
-      console.warn("Audio Context beep failed:", e);
-    }
+    playTone(440, 0.15, { gain: 0.12, type: "sawtooth" });
+    playTone(330, 0.25, { delay: 0.1, gain: 0.12, type: "sawtooth" });
   };
 
   const playSuccessChirp = () => {
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.08); // A5
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.25);
-    } catch (e) {
-      console.warn("Audio Context chirp failed:", e);
-    }
+    playTone(587.33, 0.12, { gain: 0.08 });
+    playTone(880, 0.25, { delay: 0.08, gain: 0.08 });
   };
 
   const [confirmModal, setConfirmModal] = useState<{
