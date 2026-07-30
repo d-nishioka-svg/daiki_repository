@@ -135,6 +135,9 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
   const parsedItems: InspectionListItem[] = [];
   let detectedStoreName = storeFromLine2;
 
+  // Counts repeats of the same store/part/size/color so each row gets a stable id.
+  const occurrences = new Map<string, number>();
+
   // Try extracting store number from filename e.g. "211店別納品一覧表.CSV"
   const matchStoreNumInFile = defaultFileName.match(/^(\d{3})/);
   let storePrefix = matchStoreNumInFile ? matchStoreNumInFile[1] : "";
@@ -168,8 +171,17 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
       continue;
     }
 
+    // Derive the id from the row's own contents rather than Date.now() and a random
+    // suffix. 変更数 overrides are keyed by this id and persisted, so a re-import of
+    // the same file used to orphan every override — a corrected "not delivered: 0"
+    // silently reverted to the CSV quantity, and the stale keys accumulated in
+    // localStorage forever. The occurrence counter keeps duplicate rows distinct.
+    const identity = `${store}|${partNumber}|${size}|${color}`;
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+
     parsedItems.push({
-      id: `csv_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `csv_${identity}|${occurrence}`,
       store,
       partNumber,
       size,

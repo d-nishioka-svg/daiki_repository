@@ -1412,12 +1412,30 @@ export default function App() {
             {/* Master CSV Importer Section */}
             <CsvImporter
               onImport={(list) => {
-                setInspectionList(list);
-                const storesList = Array.from(new Set(list.map(item => item.store)));
+                // An empty list is the importer's "clear everything" action.
+                if (list.length === 0) {
+                  setInspectionList([]);
+                  setSuccessMessage("検品マスターリストをクリアしました。");
+                  return;
+                }
+
+                // Replace only the stores present in the imported files. A full
+                // replace meant picking up one store's CSV wiped every other
+                // store's master, and their existing scans immediately
+                // reclassified as "リスト外" with 予定数 0.
+                const importedStores = new Set(list.map((item) => item.store));
+                setInspectionList((prev) => [
+                  ...prev.filter((item) => !importedStores.has(item.store)),
+                  ...list,
+                ]);
+
+                const storesList = Array.from(importedStores);
                 if (storesList.length > 0 && !selectedStore) {
                   setSelectedStore(storesList[0]);
                 }
-                setSuccessMessage(`検品マスターリストを更新しました。 (${list.length}型番)`);
+                setSuccessMessage(
+                  `検品マスターリストを更新しました。 (${storesList.length}店舗 / ${list.length}型番)`,
+                );
               }}
               onSelectStore={(storeName) => {
                 setSelectedStore(storeName);
@@ -1440,7 +1458,10 @@ export default function App() {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {distinctStores.map((store) => {
                   const storeItems = inspectionList.filter(item => item.store === store);
-                  const totalExpected = storeItems.reduce((acc, item) => acc + item.expectedQty, 0);
+                  const totalExpected = storeItems.reduce(
+                    (acc, item) => acc + (changedQtyOverrides[item.id] ?? item.expectedQty),
+                    0,
+                  );
                   const scannedTotal = history.filter(
                     entry => entry.store === store && entry.status !== "failed" && entry.status !== "extracting"
                   ).length;
@@ -1528,7 +1549,12 @@ export default function App() {
                 <div className="text-right">
                   <span className="text-[10px] text-slate-400 block font-mono uppercase font-bold">Master Expected Qty</span>
                   <span className="text-sm font-extrabold block">
-                    {inspectionList.filter(item => item.store === selectedStore).reduce((acc, item) => acc + item.expectedQty, 0)}点
+                    {inspectionList
+                      .filter((item) => item.store === selectedStore)
+                      .reduce(
+                        (acc, item) => acc + (changedQtyOverrides[item.id] ?? item.expectedQty),
+                        0,
+                      )}点
                   </span>
                 </div>
 
@@ -1892,12 +1918,17 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
+                    // 予定数 must be the operator's 変更数 when they set one. Exporting
+                    // the raw CSV quantity instead made the report contradict the
+                    // ledger they inspected against, and this file is the artifact
+                    // that leaves the building.
                     const headers = "店舗,品番,サイズ,カラー,予定数,実績数,状態,差分\n";
                     const rows = [
                       ...comparisonRows.map(r => {
-                        const diff = r.actualQty - r.expectedQty;
+                        const expected = changedQtyOverrides[r.id] ?? r.expectedQty;
+                        const diff = r.actualQty - expected;
                         const status = diff === 0 ? "一致" : diff < 0 ? "不足" : "過剰";
-                        return `${selectedStore},"${r.partNumber}","${r.size}","${r.color}",${r.expectedQty},${r.actualQty},"${status}",${diff}`;
+                        return `${selectedStore},"${r.partNumber}","${r.size}","${r.color}",${expected},${r.actualQty},"${status}",${diff}`;
                       }),
                       ...extraScannedItems.map(r => {
                         return `${selectedStore},"${r.partNumber}","${r.size}","${r.color}",0,${r.actualQty},"リスト外",${r.actualQty}`;
@@ -1946,7 +1977,11 @@ export default function App() {
                   ) : (
                     <>
                       {comparisonRows.map((row) => {
-                        const diff = row.actualQty - row.expectedQty;
+                        // Same override the scanning ledger works against; using the
+                        // raw CSV quantity here reported 不足 for rows the operator
+                        // had already corrected to 0.
+                        const expected = changedQtyOverrides[row.id] ?? row.expectedQty;
+                        const diff = row.actualQty - expected;
                         const matches = diff === 0;
                         const isZero = row.actualQty === 0;
                         const isShort = diff < 0 && !isZero;
@@ -1988,7 +2023,12 @@ export default function App() {
                               {row.color}
                             </td>
                             <td className="px-4 py-4 text-center font-mono font-bold text-slate-500 bg-slate-50/40">
-                              {row.expectedQty}
+                              {expected}
+                              {expected !== row.expectedQty && (
+                                <span className="block text-[9px] font-sans font-normal text-slate-400 leading-none mt-0.5">
+                                  変更 (元 {row.expectedQty})
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-4 text-center font-mono font-bold text-slate-800">
                               {row.actualQty}
