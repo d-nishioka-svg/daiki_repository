@@ -7,7 +7,9 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Cloud Run and most hosts pick the port and inject it as PORT; a hardcoded 3000
+// makes the container fail its health check and the revision never goes live.
+const PORT = Number(process.env.PORT) || 3000;
 
 // Set up larger JSON limit for base64 image transfers
 app.use(express.json({ limit: "15mb" }));
@@ -167,7 +169,9 @@ Ensure correct language translation understanding (especially for Japanese tags 
 
 // Vite middleware flow for full stack development
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -175,6 +179,18 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+
+    // The build writes the compiled server and its source map into dist/ as well,
+    // and express.static would happily serve both — publishing the entire server
+    // source. Block them before the static handler sees the request.
+    app.use((req, res, next) => {
+      if (/\.(cjs|mjs|js\.map|cjs\.map|map)$/i.test(req.path)) {
+        res.status(404).end();
+        return;
+      }
+      next();
+    });
+
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
@@ -182,7 +198,11 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+    // Log the mode: running the dev server in production ships TypeScript source
+    // and an HMR socket to every client, and that used to happen silently.
+    console.log(
+      `Server running on port ${PORT} in ${isProduction ? "production" : "development"} mode`,
+    );
   });
 }
 
