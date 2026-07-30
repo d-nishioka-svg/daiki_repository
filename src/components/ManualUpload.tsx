@@ -98,7 +98,7 @@ export const ManualUpload: React.FC<ManualUploadProps> = ({
               </div>
               <div>
                 <p className="font-bold text-sm tracking-wide text-blue-400">AIタグ解析中 / Analyzing Tag...</p>
-                <p className="text-[11px] text-slate-350 mt-1.5 max-w-xs leading-normal font-medium">
+                <p className="text-[11px] text-slate-300 mt-1.5 max-w-xs leading-normal font-medium">
                   Geminiが衣服タグの画像から品番、サイズ、カラーなどの文字情報をリアルタイムで抽出しています。
                 </p>
               </div>
@@ -151,7 +151,7 @@ export const ManualUpload: React.FC<ManualUploadProps> = ({
             </p>
           </div>
           <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 text-[10px] uppercase font-bold tracking-wider rounded-md mt-2">
-            <ImageIcon className="w-3.5 h-3.5 text-blue-550" /> 高性能画像解析 / HIGH-SPEED ANALYZER
+            <ImageIcon className="w-3.5 h-3.5 text-blue-500" /> 高性能画像解析 / HIGH-SPEED ANALYZER
           </div>
         </div>
       )}

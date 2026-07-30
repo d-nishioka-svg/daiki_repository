@@ -327,14 +327,14 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
 
   return (
     <div className="w-full flex flex-col gap-4">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 border border-slate-150 rounded-xl p-3">
-        <div className="text-xs font-bold text-slate-705 flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 border border-slate-100 rounded-xl p-3">
+        <div className="text-xs font-bold text-slate-700 flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-blue-500 animate-pulse" /> ライブカメラ映像 / CAMERA VIEWPORT
         </div>
         
         {devices.length > 1 && (
           <div className="flex items-center gap-1.5 self-end sm:self-auto">
-            <span className="text-[10px] text-slate-550 uppercase font-black tracking-wider">カメラ切替:</span>
+            <span className="text-[10px] text-slate-500 uppercase font-black tracking-wider">カメラ切替:</span>
             <select
               value={selectedDeviceId}
               onChange={handleDeviceChange}
@@ -423,7 +423,7 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
             <div className="bg-slate-900/85 backdrop-blur-xs border border-white/10 p-2 rounded-lg flex items-center gap-2.5 shadow-md">
               <Target className={`w-4.5 h-4.5 ${stablePercent > 0 ? "text-amber-400 animate-spin" : "text-slate-400"}`} style={{ animationDuration: '3s' }} />
               <div className="space-y-0.5">
-                <span className="text-[9px] font-black uppercase text-slate-350 tracking-wider block">
+                <span className="text-[9px] font-black uppercase text-slate-300 tracking-wider block">
                   {stablePercent >= 100 ? "ロックオン! / LOCKED" : scanStatusMsg}
                 </span>
                 
@@ -455,7 +455,7 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
             </div>
             <div>
               <p className="font-bold text-xs sm:text-sm tracking-wide text-blue-400">AIタグ解析中 / Analyzing Tag...</p>
-              <p className="text-[10px] sm:text-[11px] text-slate-350 mt-1 max-w-xs leading-relaxed">
+              <p className="text-[10px] sm:text-[11px] text-slate-300 mt-1 max-w-xs leading-relaxed">
                 Geminiが衣服タグの文字から品番、サイズ、カラー情報を自動抽出しています
               </p>
             </div>
@@ -470,7 +470,7 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
             </div>
             <div className="space-y-1">
               <p className="font-extrabold text-base text-emerald-400 tracking-wider">✓ 読取完了 / SUCCESS</p>
-              <p className="text-xs text-slate-250">データの抽出に成功し、スキャン記録に追加されました！</p>
+              <p className="text-xs text-slate-200">データの抽出に成功し、スキャン記録に追加されました！</p>
             </div>
           </div>
         )}
@@ -494,11 +494,11 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
       {activeStream && (
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="flex items-center justify-between bg-blue-50 hover:bg-blue-100 transition-colors border border-blue-200 rounded-xl p-3 shadow-3xs">
+            <div className="flex items-center justify-between bg-blue-50 hover:bg-blue-100 transition-colors border border-blue-200 rounded-xl p-3 shadow-2xs">
               <div className="flex items-center gap-2.5">
                 <Target className="w-5 h-5 text-blue-600 animate-pulse shrink-0" />
                 <div>
-                  <span className="text-xs font-bold text-slate-850 uppercase block tracking-tight">静止検知スキャン / AUTO-SCAN</span>
+                  <span className="text-xs font-bold text-slate-800 uppercase block tracking-tight">静止検知スキャン / AUTO-SCAN</span>
                   <span className="text-[9px] text-slate-500 font-medium block leading-normal mt-0.5">
                     ピタッと止まると自動撮影
                   </span>
@@ -517,11 +517,11 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
               </label>
             </div>
 
-            <div className={`flex items-center justify-between transition-colors border rounded-xl p-3 shadow-3xs ${batchModeEnabled ? "bg-purple-50 border-purple-200 hover:bg-purple-100" : "bg-slate-50 border-slate-200 hover:bg-slate-100"}`}>
+            <div className={`flex items-center justify-between transition-colors border rounded-xl p-3 shadow-2xs ${batchModeEnabled ? "bg-purple-50 border-purple-200 hover:bg-purple-100" : "bg-slate-50 border-slate-200 hover:bg-slate-100"}`}>
               <div className="flex items-center gap-2.5">
                 <Zap className={`w-5 h-5 shrink-0 ${batchModeEnabled ? "text-purple-600" : "text-slate-400"}`} />
                 <div>
-                  <span className="text-xs font-bold text-slate-850 uppercase block tracking-tight">連続バッチ処理 / BATCH MODE</span>
+                  <span className="text-xs font-bold text-slate-800 uppercase block tracking-tight">連続バッチ処理 / BATCH MODE</span>
                   <span className="text-[9px] text-slate-500 font-medium block leading-normal mt-0.5">
                     確認スキップで即時自動保存
                   </span>

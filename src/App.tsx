@@ -1224,7 +1224,7 @@ export default function App() {
 
           <button
             onClick={handleLogout}
-            className="px-3 py-1.5 flex items-center gap-1.5 text-xs text-gray-600 hover:text-red-600 border border-gray-250 hover:border-red-200 rounded-lg hover:bg-red-50/50 bg-white transition-all cursor-pointer font-bold shadow-xs active:scale-[0.98]"
+            className="px-3 py-1.5 flex items-center gap-1.5 text-xs text-gray-600 hover:text-red-600 border border-gray-200 hover:border-red-200 rounded-lg hover:bg-red-50/50 bg-white transition-all cursor-pointer font-bold shadow-xs active:scale-[0.98]"
             title="Disconnect Google Account"
           >
             <LogOut className="w-3.5 h-3.5 text-gray-500" />
@@ -1258,7 +1258,7 @@ export default function App() {
           </button>
 
           {isHelpOpen && (
-            <div className="px-6 pb-5 pt-1 border-t border-slate-50 text-xs text-slate-650 grid grid-cols-1 md:grid-cols-3 gap-4 font-sans leading-relaxed">
+            <div className="px-6 pb-5 pt-1 border-t border-slate-50 text-xs text-slate-600 grid grid-cols-1 md:grid-cols-3 gap-4 font-sans leading-relaxed">
               <div className="p-3 bg-slate-50/70 border border-slate-100 rounded-xl">
                 <span className="font-black text-blue-600 text-base block mb-0.5">
                   ① 平らに置く (Keep Flat)
@@ -1325,7 +1325,7 @@ export default function App() {
         {(generalError || successMessage) && (
           <div className="w-full">
             {generalError && (
-              <div className="p-4 bg-red-50 border border-red-150 rounded-xl text-xs sm:text-sm text-red-700 font-semibold flex items-start gap-2.5 shadow-xs">
+              <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-xs sm:text-sm text-red-700 font-semibold flex items-start gap-2.5 shadow-xs">
                 <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
                 <div className="space-y-1">
                   <p className="uppercase tracking-wider text-[11px] font-bold">
@@ -1338,7 +1338,7 @@ export default function App() {
               </div>
             )}
             {successMessage && (
-              <div className="p-4 bg-green-50 border border-green-150 rounded-xl text-xs sm:text-sm text-green-700 font-semibold flex items-start gap-2.5 shadow-xs">
+              <div className="p-4 bg-green-50 border border-green-100 rounded-xl text-xs sm:text-sm text-green-700 font-semibold flex items-start gap-2.5 shadow-xs">
                 <CheckCircle className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
                 <div className="space-y-1">
                   <p className="uppercase tracking-wider text-[11px] font-bold">
@@ -1356,7 +1356,7 @@ export default function App() {
         {/* ========================================================= */}
         {/* INVENTORY INSPECTION WORKFLOW STEPPER BAR COMPONENTS      */}
         {/* ========================================================= */}
-        <div className="bg-white rounded-2xl border border-slate-205 shadow-3xs p-5 flex flex-col md:flex-row md:items-center justify-between gap-5 font-sans">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs p-5 flex flex-col md:flex-row md:items-center justify-between gap-5 font-sans">
           <div className="flex items-center gap-3.5">
             <div className="p-3 bg-slate-900 text-white rounded-xl shadow-xs border border-slate-800">
               <ListCheck className="w-5 h-5 text-blue-400" />
@@ -1365,13 +1365,13 @@ export default function App() {
               <h3 className="font-extrabold text-slate-800 text-sm md:text-base tracking-tight leading-snug">
                 店舗別 仕入・検品フロー / Logistics Inspection Flow
               </h3>
-              <p className="text-xs text-slate-450 mt-0.5 font-medium">
+              <p className="text-xs text-slate-400 mt-0.5 font-medium">
                 ①店舗選択 ➔ ②連続スキャン ➔ ③結果確認・差分突合 を順に行い、検品完了後に次の店舗へ進みます。
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1 sm:gap-2 bg-slate-50 border border-slate-150 rounded-xl p-1.5 self-start md:self-center">
+          <div className="flex flex-wrap items-center gap-1 sm:gap-2 bg-slate-50 border border-slate-100 rounded-xl p-1.5 self-start md:self-center">
             <button
               onClick={() => {
                 setWorkflowStep("store_select");
@@ -1495,7 +1495,7 @@ export default function App() {
                       className={`text-left p-5 rounded-2xl border transition-all cursor-pointer relative overflow-hidden flex flex-col justify-between h-36 ${
                         isSelected
                           ? "bg-slate-900 border-slate-900 text-white shadow-md"
-                          : "bg-slate-50/50 hover:bg-slate-50 border-slate-200 text-slate-800 hover:border-slate-350 shadow-3xs"
+                          : "bg-slate-50/50 hover:bg-slate-50 border-slate-200 text-slate-800 hover:border-slate-300 shadow-2xs"
                       }`}
                     >
                       {isSelected && (
@@ -1513,7 +1513,7 @@ export default function App() {
                       </div>
 
                       <div className="mt-3">
-                        <span className={`text-[10px] block font-mono ${isSelected ? "text-slate-300" : "text-slate-450"}`}>
+                        <span className={`text-[10px] block font-mono ${isSelected ? "text-slate-300" : "text-slate-400"}`}>
                           マスタ登録: {storeItems.length}型番 (予定仕様総数 {totalExpected}点)
                         </span>
                         <span className={`text-[11px] block font-extrabold mt-1 ${isSelected ? "text-green-400" : "text-green-600"}`}>
@@ -1535,7 +1535,7 @@ export default function App() {
                     setMobileTab("scan");
                     window.scrollTo({ top: 0, behavior: "smooth" });
                   }}
-                  className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-xl shadow-xs text-sm flex items-center gap-2 transition-all cursor-pointer shadow-3xs active:scale-[0.985]"
+                  className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-xl shadow-xs text-sm flex items-center gap-2 transition-all cursor-pointer shadow-2xs active:scale-[0.985]"
                 >
                   {selectedStore} の検品（連続スキャン）を開始する
                   <ArrowRight className="w-4 h-4 text-white" />
@@ -1557,7 +1557,7 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[9px] text-blue-400 font-black tracking-widest uppercase">ACTIVE PHYSICAL LOCATION</span>
-                    <span className="text-[9px] bg-red-650 text-white font-bold px-2 py-0.5 rounded-full animate-pulse">連続スキャンモード (自動保存ON)</span>
+                    <span className="text-[9px] bg-red-600 text-white font-bold px-2 py-0.5 rounded-full animate-pulse">連続スキャンモード (自動保存ON)</span>
                   </div>
                   <span className="text-lg md:text-xl font-bold block tracking-tight mt-0.5">{selectedStore}</span>
                 </div>
@@ -1615,7 +1615,7 @@ export default function App() {
                       <p className="font-bold text-slate-800 text-sm">
                         Spreadsheet Connection Required
                       </p>
-                      <p className="text-xs text-slate-550 max-w-xs px-4">
+                      <p className="text-xs text-slate-500 max-w-xs px-4">
                         Please configure or create a target Google Spreadsheet in
                         Step 1 to unlock high-speed photo scanning.
                       </p>
@@ -1635,7 +1635,7 @@ export default function App() {
                         onClick={() => setInputTab("camera")}
                         className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold rounded transition-all cursor-pointer ${
                           inputTab === "camera"
-                            ? "bg-white text-blue-700 shadow-3xs"
+                            ? "bg-white text-blue-700 shadow-2xs"
                             : "text-slate-500 hover:text-slate-800"
                         }`}
                       >
@@ -1645,7 +1645,7 @@ export default function App() {
                         onClick={() => setInputTab("upload")}
                         className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold rounded transition-all cursor-pointer ${
                           inputTab === "upload"
-                            ? "bg-white text-blue-700 shadow-3xs"
+                            ? "bg-white text-blue-700 shadow-2xs"
                             : "text-slate-500 hover:text-slate-800"
                         }`}
                       >
@@ -1775,7 +1775,7 @@ export default function App() {
                   <History className="w-4 h-4" />
                   <span className="text-[10px] sm:text-xs">4. セッション履歴</span>
                   {history.length > 0 ? (
-                    <span className="bg-blue-650 text-white text-[9px] px-1.5 py-0.2 rounded-full min-w-4 text-center mt-0.5 leading-none animate-bounce">
+                    <span className="bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded-full min-w-4 text-center mt-0.5 leading-none animate-bounce">
                       {history.length}
                     </span>
                   ) : (
@@ -1828,7 +1828,7 @@ export default function App() {
                           onClick={() => setInputTab("camera")}
                           className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 py-2.5 px-3 text-xs font-bold rounded-md transition-all cursor-pointer ${
                             inputTab === "camera"
-                              ? "bg-white text-blue-700 shadow-3xs"
+                              ? "bg-white text-blue-700 shadow-2xs"
                               : "text-slate-500 hover:text-slate-800"
                           }`}
                         >
@@ -1838,7 +1838,7 @@ export default function App() {
                           onClick={() => setInputTab("upload")}
                           className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 py-2.5 px-3 text-xs font-bold rounded-md transition-all cursor-pointer ${
                             inputTab === "upload"
-                              ? "bg-white text-blue-700 shadow-3xs"
+                              ? "bg-white text-blue-700 shadow-2xs"
                               : "text-slate-500 hover:text-slate-800"
                           }`}
                         >
@@ -1916,17 +1916,17 @@ export default function App() {
 
         {/* STEP 3: RESULTS RECONCILIATION TABLE VIEW */}
         {workflowStep === "results" && (
-          <div className="bg-white rounded-2xl border border-slate-205 shadow-sm p-6 animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 animate-fade-in">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 border-b border-slate-50 pb-5">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-slate-105 text-slate-800 rounded-xl border border-slate-150 shrink-0">
+                <div className="p-2 bg-slate-100 text-slate-800 rounded-xl border border-slate-100 shrink-0">
                   <CheckCircle2 className="w-5 h-5 text-green-600" />
                 </div>
                 <div>
                   <h3 className="font-bold text-slate-800 text-sm md:text-base">
                     【{selectedStore}】結果確認・差異突合シミュレーター
                   </h3>
-                  <p className="text-xs text-slate-450 mt-0.5 font-medium">
+                  <p className="text-xs text-slate-400 mt-0.5 font-medium">
                     仕入マスター予定数量(CSV)と、AIカメラで実物から自動検出した実績数量の差異突合レポート
                   </p>
                 </div>
@@ -1964,7 +1964,7 @@ export default function App() {
                     document.body.removeChild(link);
                     setSuccessMessage("突合レポートCSVのエクスポートが完了しました。");
                   }}
-                  className="text-xs text-blue-650 hover:text-blue-700 bg-blue-50/55 hover:bg-blue-105 border border-blue-200 rounded-lg px-3.5 py-2 cursor-pointer transition-colors font-bold flex items-center gap-1.5"
+                  className="text-xs text-blue-600 hover:text-blue-700 bg-blue-50/55 hover:bg-blue-100 border border-blue-200 rounded-lg px-3.5 py-2 cursor-pointer transition-colors font-bold flex items-center gap-1.5"
                 >
                   <Upload className="w-3.5 h-3.5 shrink-0" />
                   突合表CSVエクスポート
@@ -1975,7 +1975,7 @@ export default function App() {
             <div className="overflow-x-auto -mx-6">
               <table className="w-full text-left border-collapse min-w-[650px] text-xs">
                 <thead>
-                  <tr className="border-b border-slate-200 text-[10px] font-black uppercase text-slate-450 tracking-widest bg-slate-50/55 h-11">
+                  <tr className="border-b border-slate-200 text-[10px] font-black uppercase text-slate-400 tracking-widest bg-slate-50/55 h-11">
                     <th className="px-6 py-2.5 font-mono">状態 / STATUS</th>
                     <th className="px-4 py-2.5 font-mono">品番・型番 / PART CODE</th>
                     <th className="px-4 py-2.5 font-mono">サイズ / SIZE</th>
@@ -1985,7 +1985,7 @@ export default function App() {
                     <th className="px-6 py-2.5 text-right font-mono">差異 / DIFF</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 text-slate-650 font-sans">
+                <tbody className="divide-y divide-slate-100 text-slate-600 font-sans">
                   {comparisonRows.length === 0 && extraScannedItems.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-6 py-12 text-center text-slate-400 font-medium">
@@ -2014,7 +2014,7 @@ export default function App() {
                                 </span>
                               )}
                               {isZero && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-50 text-slate-450 font-bold border border-slate-150">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-50 text-slate-400 font-bold border border-slate-100">
                                   未スキャン (PENDING)
                                 </span>
                               )}
@@ -2101,8 +2101,8 @@ export default function App() {
             </div>
 
             {/* Next Store Flow Step Control Block */}
-            <div className="mt-8 pt-6 border-t border-slate-150 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/80 rounded-2xl p-4 border border-slate-100">
-              <div className="text-slate-550 text-xs text-center sm:text-left font-medium leading-relaxed">
+            <div className="mt-8 pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/80 rounded-2xl p-4 border border-slate-100">
+              <div className="text-slate-500 text-xs text-center sm:text-left font-medium leading-relaxed">
                 現在の店舗【 <strong>{selectedStore}</strong> 】の検査が終わりましたら、次の店舗の検品へ進んでください。
               </div>
 
@@ -2122,7 +2122,7 @@ export default function App() {
                   setSuccessMessage(`次の店舗【 ${nextStore} 】の検品に切り替えました。連続スキャンを開始可能です。`);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
-                className="w-full sm:w-auto px-6 py-3.5 bg-green-600 hover:bg-green-700 text-white shadow-xs font-extrabold rounded-xl text-sm flex items-center justify-center gap-2.5 transition-all cursor-pointer transform hover:-translate-y-0.5 duration-100 shadow-3xs active:scale-[0.985]"
+                className="w-full sm:w-auto px-6 py-3.5 bg-green-600 hover:bg-green-700 text-white shadow-xs font-extrabold rounded-xl text-sm flex items-center justify-center gap-2.5 transition-all cursor-pointer transform hover:-translate-y-0.5 duration-100 shadow-2xs active:scale-[0.985]"
               >
                 ※次の店舗へ進む (Proceed to Next Store)
                 <ChevronRight className="w-4 h-4 text-white" />
@@ -2175,12 +2175,12 @@ export default function App() {
           <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xl max-w-md w-full overflow-hidden transform scale-100 transition-all">
             <div className="p-6">
               <h3 className="text-base font-extrabold text-slate-900 mb-2">{confirmModal.title}</h3>
-              <p className="text-sm text-slate-550 leading-relaxed">{confirmModal.message}</p>
+              <p className="text-sm text-slate-500 leading-relaxed">{confirmModal.message}</p>
             </div>
             <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t border-slate-100">
               <button
                 onClick={() => setConfirmModal(null)}
-                className="px-4 py-2 text-xs font-bold text-slate-550 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
               >
                 キャンセル
               </button>
@@ -2226,13 +2226,13 @@ export default function App() {
             <div className="bg-amber-100/50 px-6 py-4 flex justify-end gap-3 border-t border-amber-200">
               <button
                 onClick={overscanAlert.onCancel}
-                className="px-4 py-2.5 text-xs font-bold text-slate-650 hover:bg-amber-100 rounded-lg transition-colors cursor-pointer"
+                className="px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-amber-100 rounded-lg transition-colors cursor-pointer"
               >
                 キャンセル（記録しない）
               </button>
               <button
                 onClick={overscanAlert.onAccept}
-                className="px-5 py-2.5 text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-750 rounded-lg shadow-sm transition-colors cursor-pointer"
+                className="px-5 py-2.5 text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-sm transition-colors cursor-pointer"
               >
                 了解して検品数に加える
               </button>
@@ -2264,13 +2264,13 @@ export default function App() {
             <div className="bg-rose-100/50 px-6 py-4 flex justify-end gap-3 border-t border-rose-200">
               <button
                 onClick={nonMasterAlert.onCancel}
-                className="px-4 py-2.5 text-xs font-bold text-slate-650 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer"
+                className="px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer"
               >
                 キャンセル（記録しない）
               </button>
               <button
                 onClick={nonMasterAlert.onAccept}
-                className="px-5 py-2.5 text-xs font-extrabold text-white bg-rose-600 hover:bg-rose-750 rounded-lg shadow-sm transition-colors cursor-pointer"
+                className="px-5 py-2.5 text-xs font-extrabold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-sm transition-colors cursor-pointer"
               >
                 了解して記録に加える
               </button>
@@ -2307,7 +2307,7 @@ export default function App() {
               </button>
               <button
                 onClick={uninspectedAlert.onConfirm}
-                className="px-5 py-2.5 text-xs font-extrabold text-white bg-red-650 hover:bg-red-700 rounded-lg transition-colors cursor-pointer"
+                className="px-5 py-2.5 text-xs font-extrabold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors cursor-pointer"
               >
                 不足を承知で結果確認へ進む
               </button>

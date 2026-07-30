@@ -59,7 +59,7 @@ export class ErrorBoundary extends React.Component<
             スプレッドシートに保存済みのデータは失われていません。
           </p>
 
-          <pre className="text-[11px] font-mono text-slate-500 bg-slate-50 border border-slate-150 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words">
+          <pre className="text-[11px] font-mono text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words">
             {error.message || String(error)}
           </pre>
 

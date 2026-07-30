@@ -70,7 +70,7 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
         {isExtracting ? (
           <div className="flex flex-col items-center justify-center py-16 gap-3">
             <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-            <p className="text-sm font-bold text-slate-705">Geminiが衣服タグを高速読取中...</p>
+            <p className="text-sm font-bold text-slate-700">Geminiが衣服タグを高速読取中...</p>
             <p className="text-xs text-slate-400 font-medium text-center">AIが品番（NO）・サイズ（SIZE）・カラー（COL）を瞬時に分類・抽出しています</p>
           </div>
         ) : !initialData ? (
@@ -81,7 +81,7 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
             </p>
           </div>
         ) : (
-          <div className="p-5 bg-blue-50/50 rounded-xl border border-blue-150 space-y-4">
+          <div className="p-5 bg-blue-50/50 rounded-xl border border-blue-100 space-y-4">
             <div className="flex justify-between items-center pb-2 border-b border-blue-100">
                <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded tracking-wider uppercase">Recent Read</span>
                <span className="text-[10px] text-blue-500 font-mono font-bold">#PRO-ACTIVE</span>
@@ -97,7 +97,7 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
                   value={partNumber}
                   onChange={(e) => setPartNumber(e.target.value)}
                   placeholder="e.g. 460912, FD1029-010"
-                  className="w-full text-lg font-mono font-bold text-slate-800 px-3.5 py-2.5 bg-white border border-blue-150 outline-none focus:border-blue-500 rounded-xl"
+                  className="w-full text-lg font-mono font-bold text-slate-800 px-3.5 py-2.5 bg-white border border-blue-100 outline-none focus:border-blue-500 rounded-xl"
                   disabled={isSaving}
                 />
               </div>
@@ -112,7 +112,7 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
                     value={size}
                     onChange={(e) => setSize(e.target.value)}
                     placeholder="e.g. L, 130, M"
-                    className="w-full text-base font-mono font-bold text-slate-800 px-3.5 py-2.5 bg-white border border-blue-150 outline-none focus:border-blue-500 rounded-xl"
+                    className="w-full text-base font-mono font-bold text-slate-800 px-3.5 py-2.5 bg-white border border-blue-100 outline-none focus:border-blue-500 rounded-xl"
                     disabled={isSaving}
                   />
                 </div>
@@ -126,7 +126,7 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
                     value={color}
                     onChange={(e) => setColor(e.target.value)}
                     placeholder="e.g. 09 BLACK, WHITE"
-                    className="w-full text-base font-mono font-bold text-slate-800 px-3.5 py-2.5 bg-white border border-blue-150 outline-none focus:border-blue-500 rounded-xl"
+                    className="w-full text-base font-mono font-bold text-slate-800 px-3.5 py-2.5 bg-white border border-blue-100 outline-none focus:border-blue-500 rounded-xl"
                     disabled={isSaving}
                   />
                 </div>
@@ -142,7 +142,7 @@ export const ScanResultForm: React.FC<ScanResultFormProps> = ({
             type="button"
             onClick={onReset}
             disabled={isSaving}
-            className="px-4 py-3 border border-slate-250 hover:border-slate-350 text-slate-600 hover:text-slate-900 font-bold text-xs md:text-sm rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 bg-white min-h-[48px]"
+            className="px-4 py-3 border border-slate-200 hover:border-slate-300 text-slate-600 hover:text-slate-900 font-bold text-xs md:text-sm rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 bg-white min-h-[48px]"
           >
             <RotateCcw className="w-4 h-4 text-slate-500" /> クリア / RESET
           </button>

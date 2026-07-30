@@ -19,7 +19,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-slate-100 rounded-xl text-slate-705">
+          <div className="p-2.5 bg-slate-100 rounded-xl text-slate-700">
             <History className="w-5 h-5 animate-pulse" />
           </div>
           <div>
@@ -43,7 +43,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
       {entries.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/30">
           <p className="font-bold text-sm text-slate-500 uppercase tracking-widest font-mono">履歴はまだありません / Queue is Empty</p>
-          <p className="text-xs text-slate-450 max-w-xs px-6 mt-1 leading-normal font-sans">
+          <p className="text-xs text-slate-400 max-w-xs px-6 mt-1 leading-normal font-sans">
             タグの解析・保存が正常に完了すると、このセッションログにリアルタイムで反映されます。
           </p>
         </div>
@@ -51,7 +51,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
         <div className="overflow-x-auto -mx-6">
           <table className="w-full text-left border-collapse min-w-[500px]">
             <thead>
-              <tr className="border-b border-gray-200 text-[10px] font-black uppercase text-gray-450 tracking-widest bg-slate-50/55">
+              <tr className="border-b border-gray-200 text-[10px] font-black uppercase text-gray-400 tracking-widest bg-slate-50/55">
                 <th className="px-5 py-3 text-center w-12 font-mono">タグ画像 / IMG</th>
                 <th className="px-4 py-3 font-mono">店舗 / STORE</th>
                 <th className="px-4 py-3 font-mono">時間 / TIME</th>
@@ -67,7 +67,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                   {/* Thumbnail Image component column */}
                   <td className="px-5 py-2.5 text-center">
                     {entry.previewImage ? (
-                      <div className="relative inline-block w-10 h-10 rounded-lg overflow-hidden border border-slate-200 shadow-3xs bg-slate-100">
+                      <div className="relative inline-block w-10 h-10 rounded-lg overflow-hidden border border-slate-200 shadow-2xs bg-slate-100">
                         <img
                           src={entry.previewImage}
                           alt="clothes tag"
@@ -76,7 +76,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                         />
                       </div>
                     ) : (
-                      <div className="w-10 h-10 rounded-lg border border-slate-150 bg-slate-50 flex items-center justify-center text-slate-350 mx-auto">
+                      <div className="w-10 h-10 rounded-lg border border-slate-100 bg-slate-50 flex items-center justify-center text-slate-300 mx-auto">
                         <History className="w-4 h-4" />
                       </div>
                     )}
@@ -112,7 +112,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                     {entry.status === "extracting" ? (
                       <span className="text-slate-300 font-sans">...</span>
                     ) : (
-                      <span className="font-bold text-slate-705 uppercase tracking-wide">{entry.color || "—"}</span>
+                      <span className="font-bold text-slate-700 uppercase tracking-wide">{entry.color || "—"}</span>
                     )}
                   </td>
 
@@ -144,7 +144,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                           {onSaveEntry && (
                             <button
                               onClick={() => onSaveEntry(entry)}
-                              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-[10px] font-bold shadow-3xs hover:shadow-2xs transition-all cursor-pointer flex items-center gap-1 min-h-[28px]"
+                              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-[10px] font-bold shadow-2xs hover:shadow-2xs transition-all cursor-pointer flex items-center gap-1 min-h-[28px]"
                             >
                               保存
                             </button>
@@ -155,7 +155,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                       {entry.status === "failed" && (
                         <div className="flex items-center gap-1.5">
                           <span
-                            className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-red-650 bg-red-50 px-2.5 py-1 rounded border border-red-200 uppercase tracking-widest cursor-help"
+                            className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-red-600 bg-red-50 px-2.5 py-1 rounded border border-red-200 uppercase tracking-widest cursor-help"
                             title={entry.error || "Save error occurred"}
                           >
                             ⚠ 失敗 (FAILED)
@@ -182,12 +182,12 @@ export const HistoryList: React.FC<HistoryListProps> = ({
 
       {selectedSheet && entries.length > 0 && (
         <div className="mt-5 p-4 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between text-xs text-slate-600 flex-wrap gap-2">
-          <span className="font-medium text-slate-705">スプレッドシート本体に保存された全データを確認しますか？</span>
+          <span className="font-medium text-slate-700">スプレッドシート本体に保存された全データを確認しますか？</span>
           <a
             href={selectedSheet.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-1.5 text-slate-800 border border-slate-250 hover:border-slate-350 bg-white font-bold rounded-lg px-4 py-2.5 shadow-xs transition-colors min-h-[40px] cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 text-slate-800 border border-slate-200 hover:border-slate-300 bg-white font-bold rounded-lg px-4 py-2.5 shadow-xs transition-colors min-h-[40px] cursor-pointer"
           >
             Googleスプレッドシートを開く <ArrowUpRight className="w-4 h-4 text-slate-500" />
           </a>

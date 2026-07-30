@@ -439,7 +439,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
             <FileSpreadsheet className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="font-extrabold text-slate-850 text-base md:text-lg leading-snug">
+            <h3 className="font-extrabold text-slate-800 text-base md:text-lg leading-snug">
               店舗別納品CSVマスター設定（共有フォルダ連携）
             </h3>
             <p className="text-xs text-slate-500 mt-0.5 font-medium">
@@ -451,7 +451,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
         <div className="flex items-center gap-2 self-start sm:self-center">
           <button
             onClick={() => setShowHelper(!showHelper)}
-            className="text-xs text-slate-600 hover:text-slate-900 p-2 border border-slate-200 hover:border-slate-350 rounded-lg bg-white flex items-center gap-1.5 transition-colors cursor-pointer font-bold"
+            className="text-xs text-slate-600 hover:text-slate-900 p-2 border border-slate-200 hover:border-slate-300 rounded-lg bg-white flex items-center gap-1.5 transition-colors cursor-pointer font-bold"
           >
             <HelpCircle className="w-4 h-4 text-slate-400" />
             使い方ガイド
@@ -468,7 +468,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
       </div>
 
       {showHelper && (
-        <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-650 leading-relaxed space-y-2">
+        <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 leading-relaxed space-y-2">
           <p className="font-bold text-slate-800">💡 フォルダパス＆店舗番号入力システムの使い方：</p>
           <ol className="list-decimal list-inside space-y-1.5 pl-1 font-medium">
             <li>
@@ -551,7 +551,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
         <div className="pt-2 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-400 gap-2 font-mono">
           <div className="flex items-center gap-2 overflow-hidden">
             <span className="text-slate-400 shrink-0 font-bold font-sans">対象ファイル指定:</span>
-            <span className="text-blue-300 bg-slate-850 border border-slate-700 px-2.5 py-1 rounded-md text-[11px] truncate font-bold">
+            <span className="text-blue-300 bg-slate-800 border border-slate-700 px-2.5 py-1 rounded-md text-[11px] truncate font-bold">
               {currentExpectedFileName}
             </span>
           </div>
@@ -567,7 +567,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
 
       {/* CSV Status Summary */}
       {currentlyLoadedCount > 0 && (
-        <div className="mb-4 px-4 py-3 bg-emerald-50 border border-emerald-150 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between text-xs text-emerald-800 font-medium gap-2">
+        <div className="mb-4 px-4 py-3 bg-emerald-50 border border-emerald-100 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between text-xs text-emerald-800 font-medium gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
             <span>
@@ -627,7 +627,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
                   className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 ${
                     isSelected
                       ? "bg-emerald-600 text-white shadow-xs scale-105 ring-2 ring-emerald-300"
-                      : "bg-white text-slate-700 border border-slate-200 hover:border-slate-350 hover:bg-slate-100"
+                      : "bg-white text-slate-700 border border-slate-200 hover:border-slate-300 hover:bg-slate-100"
                   }`}
                   title={storeData.storeName}
                 >
