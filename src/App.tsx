@@ -75,6 +75,10 @@ export default function App() {
   const [processingDate, setProcessingDate] = useState<string>("2026/05/21");
   const [changedQtyOverrides, setChangedQtyOverrides] = useState<Record<string, number>>({});
 
+  // History row the review form is editing, so saving updates that row instead of
+  // appending a second one for the same physical garment.
+  const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
+
   // Deduplication state for continuous scanning flow
   const [lastScannedPartNumber, setLastScannedPartNumber] = useState<
     string | null
@@ -652,6 +656,9 @@ export default function App() {
             ),
           );
 
+          // Remember which row the form is about to edit so the save updates it
+          setPendingEntryId(targetId);
+
           // Turn down to edit view to let operator correct OCR outputs manually
           setMobileTab("edit");
         }
@@ -731,30 +738,66 @@ export default function App() {
       return;
     }
 
+    // The scan already created a row and left it "pending", and pending rows are
+    // counted. Prepending a second row here counted one garment twice while
+    // writing a single sheet row, so reuse that row when it is still present.
+    const pendingEntry = pendingEntryId
+      ? history.find((e) => e.id === pendingEntryId)
+      : undefined;
+
+    // The same row can also be saved from the history feed's own button; don't
+    // write it to the sheet a second time from here.
+    if (pendingEntry?.status === "saved" || pendingEntry?.status === "saving") {
+      setScanResult(null);
+      setCapturedImageBase64(null);
+      setPendingEntryId(null);
+      setMobileTab("scan");
+      setSuccessMessage("この項目はすでに保存済みです。");
+      return;
+    }
+
     setIsSaving(true);
     setGeneralError(null);
     setSuccessMessage(null);
 
-    // Create a temporary history log entry
     const timestamp = new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
     });
     const fullTimestamp = new Date().toLocaleString("ja-JP");
-    const newId = Date.now().toString();
-    const tempEntry: ScanHistoryEntry = {
-      id: newId,
-      time: timestamp,
-      partNumber: finalData.partNumber,
-      size: finalData.size,
-      color: finalData.color,
-      status: "saving",
-      previewImage: capturedImageBase64 || undefined,
-      store: selectedStore,
-    };
+    const existingId = pendingEntry ? pendingEntry.id : null;
+    const targetEntryId = existingId ?? Date.now().toString();
 
-    setHistory((prev) => [tempEntry, ...prev]);
+    if (existingId) {
+      setHistory((prev) =>
+        prev.map((e) =>
+          e.id === existingId
+            ? {
+                ...e,
+                partNumber: finalData.partNumber,
+                size: finalData.size,
+                color: finalData.color,
+                status: "saving",
+              }
+            : e,
+        ),
+      );
+    } else {
+      setHistory((prev) => [
+        {
+          id: targetEntryId,
+          time: timestamp,
+          partNumber: finalData.partNumber,
+          size: finalData.size,
+          color: finalData.color,
+          status: "saving",
+          previewImage: capturedImageBase64 || undefined,
+          store: selectedStore,
+        },
+        ...prev,
+      ]);
+    }
 
     try {
       // Append row to active Google Sheet
@@ -768,7 +811,7 @@ export default function App() {
 
       // Update intermediate log entry state to saved
       setHistory((prev) =>
-        prev.map((e) => (e.id === newId ? { ...e, status: "saved" } : e)),
+        prev.map((e) => (e.id === targetEntryId ? { ...e, status: "saved" } : e)),
       );
 
       setSuccessMessage(
@@ -777,6 +820,7 @@ export default function App() {
       // Soft reset the scanning viewport for the next item
       setScanResult(null);
       setCapturedImageBase64(null);
+      setPendingEntryId(null);
 
       // Return back to uploader/live camera tab on mobile for continuous scanning workflow
       setMobileTab("scan");
@@ -784,7 +828,7 @@ export default function App() {
       console.error("Save to sheet failed:", err);
       setHistory((prev) =>
         prev.map((e) =>
-          e.id === newId
+          e.id === targetEntryId
             ? { ...e, status: "failed", error: err.message || "Insert failed" }
             : e,
           ),
@@ -854,6 +898,15 @@ export default function App() {
   };
 
   const handleResetScan = () => {
+    // Discarding the form also discards the row it was editing, which would
+    // otherwise stay "pending" forever and keep counting towards the store total
+    // with nothing ever written to the sheet.
+    if (pendingEntryId) {
+      setHistory((prev) =>
+        prev.filter((e) => !(e.id === pendingEntryId && e.status === "pending")),
+      );
+      setPendingEntryId(null);
+    }
     setScanResult(null);
     setCapturedImageBase64(null);
     setGeneralError(null);
