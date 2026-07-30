@@ -3,6 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import dotenv from "dotenv";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import firebaseConfig from "./firebase-applet-config.json";
 
 dotenv.config();
 
@@ -29,6 +31,68 @@ if (apiKey) {
 } else {
   console.warn("WARNING: GEMINI_API_KEY environment variable is not set.");
 }
+
+// ---------------------------------------------------------------------------
+// Access control for /api/extract
+//
+// The endpoint spends the server's Gemini quota, and one request can drive up to
+// three upstream calls through the retry/fallback loop. Left open, anyone who
+// learns the deployed URL can bill the project's Gemini account indefinitely.
+// The app already requires a Firebase sign-in before the scanner is reachable,
+// so every legitimate caller has an ID token to present.
+// ---------------------------------------------------------------------------
+const FIREBASE_PROJECT_ID =
+  process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
+
+// Escape hatch for environments where the client cannot attach a token. Leaving
+// this on exposes the Gemini key to anyone with the URL.
+const ALLOW_UNAUTHENTICATED =
+  process.env.ALLOW_UNAUTHENTICATED_EXTRACT === "true";
+
+// jose caches the keys and handles Google's rotation.
+const firebaseJwks = createRemoteJWKSet(
+  new URL(
+    "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+  ),
+);
+
+const verifyFirebaseIdToken = async (authorization?: string) => {
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+  if (!token) throw new Error("Missing bearer token");
+
+  const { payload } = await jwtVerify(token, firebaseJwks, {
+    issuer: `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`,
+    audience: FIREBASE_PROJECT_ID,
+  });
+  return payload;
+};
+
+// Small in-memory limiter. Not a substitute for the token check — it only bounds
+// the damage a single signed-in client (or an unauthenticated deployment) can do.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+const requestCounts = new Map<string, { count: number; resetAt: number }>();
+
+const isRateLimited = (key: string): boolean => {
+  const now = Date.now();
+  const entry = requestCounts.get(key);
+
+  if (!entry || now > entry.resetAt) {
+    requestCounts.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    // Opportunistic cleanup so the map cannot grow without bound.
+    if (requestCounts.size > 1000) {
+      for (const [k, v] of requestCounts) {
+        if (now > v.resetAt) requestCounts.delete(k);
+      }
+    }
+    return false;
+  }
+
+  entry.count += 1;
+  return entry.count > RATE_LIMIT_MAX_REQUESTS;
+};
 
 // Helper function to call Gemini API with robust retries, jittered exponential backoff, and model fallback
 async function generateTagContentWithRetry(imagePart: any, promptText: string) {
@@ -120,6 +184,25 @@ app.post("/api/extract", async (req, res) => {
   try {
     if (!ai) {
       return res.status(500).json({ error: "Gemini API key is not configured on the server." });
+    }
+
+    let callerId = req.ip || "unknown";
+    if (!ALLOW_UNAUTHENTICATED) {
+      try {
+        const payload = await verifyFirebaseIdToken(req.headers.authorization);
+        callerId = String(payload.sub || callerId);
+      } catch (authErr: any) {
+        console.warn("[Auth] Rejected /api/extract:", authErr?.message);
+        return res
+          .status(401)
+          .json({ error: "サインインの有効期限が切れています。再度サインインしてください。" });
+      }
+    }
+
+    if (isRateLimited(callerId)) {
+      return res.status(429).json({
+        error: "読み取り要求が多すぎます。少し待ってから再試行してください。",
+      });
     }
 
     const { imageBase64, mimeType } = req.body;

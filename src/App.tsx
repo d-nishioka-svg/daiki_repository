@@ -558,10 +558,15 @@ export default function App() {
     setHistory((prev) => [tempEntry, ...prev]);
 
     try {
+      // The endpoint spends the server's Gemini quota, so it verifies this token
+      // rather than serving anyone who knows the URL.
+      const idToken = user ? await user.getIdToken() : null;
+
       const response = await fetch("/api/extract", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
         },
         body: JSON.stringify({
           imageBase64: base64,
@@ -570,7 +575,12 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        // Express's own error handler answers with HTML for oversized or malformed
+        // bodies, so response.json() throws there and the operator used to see
+        // "Unexpected token '<'" instead of what actually went wrong.
+        const errorData = await response
+          .json()
+          .catch(() => ({ error: `読み取りに失敗しました (HTTP ${response.status})` }));
         throw new Error(errorData.error || "Failed to analyze tag image.");
       }
 
