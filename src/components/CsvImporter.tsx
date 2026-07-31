@@ -296,6 +296,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showHelper, setShowHelper] = useState(false);
+  const [confirmClearMaster, setConfirmClearMaster] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -776,20 +777,42 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
               検品マスター登録中: <strong>{currentlyLoadedCount}型番</strong> ({currentlyLoadedStoresCount}店舗分キャッシュ済)
             </span>
           </div>
-          <button
-            onClick={() => {
-              if (window.confirm("現在読み込まれている全店舗の検品マスターデータをクリアしますか？")) {
-                onImport([]);
-                setLoadedFilesCache({});
-                setSuccess(null);
-                setError(null);
-              }
-            }}
-            className="text-[11px] text-rose-600 hover:text-rose-700 font-bold border border-rose-200 bg-white hover:bg-rose-50 px-3 py-1 rounded-lg transition-colors cursor-pointer self-start sm:self-auto flex items-center gap-1"
-          >
-            <Trash2 className="w-3 h-3" />
-            マスター全クリア
-          </button>
+          {/* Confirmed inline rather than with window.confirm: the app is served
+              inside a sandboxed iframe that blocks native dialogs, and a blocked
+              confirm returns false, so the button silently did nothing. */}
+          {confirmClearMaster ? (
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+              <span className="text-[11px] font-bold text-rose-700">
+                全{currentlyLoadedStoresCount}店舗分を削除します。よろしいですか？
+              </span>
+              <button
+                onClick={() => {
+                  onImport([]);
+                  setLoadedFilesCache({});
+                  setError(null);
+                  setSuccess("検品マスターデータをすべてクリアしました。");
+                  setConfirmClearMaster(false);
+                }}
+                className="text-[11px] text-white font-extrabold bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded-lg transition-colors cursor-pointer"
+              >
+                削除する
+              </button>
+              <button
+                onClick={() => setConfirmClearMaster(false)}
+                className="text-[11px] text-slate-600 hover:text-slate-900 font-bold border border-slate-200 bg-white hover:bg-slate-50 px-3 py-1 rounded-lg transition-colors cursor-pointer"
+              >
+                やめる
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmClearMaster(true)}
+              className="text-[11px] text-rose-600 hover:text-rose-700 font-bold border border-rose-200 bg-white hover:bg-rose-50 px-3 py-1 rounded-lg transition-colors cursor-pointer self-start sm:self-auto flex items-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" />
+              マスター全クリア
+            </button>
+          )}
         </div>
       )}
 

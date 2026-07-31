@@ -20,6 +20,7 @@ export const SheetSelector: React.FC<SheetSelectorProps> = ({
   const [existingId, setExistingId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,16 +100,37 @@ export const SheetSelector: React.FC<SheetSelectorProps> = ({
             >
               シートを確認する / View Sheet <ExternalLink className="w-3.5 h-3.5" />
             </a>
-            <button
-              onClick={() => {
-                if(window.confirm("接続を解除しても、Googleドライブ内のスプレッドシート本体は削除されません。システムから接続を解除しますか？")) {
-                  onSheetSelected(null as any);
-                }
-              }}
-              className="px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-600 hover:text-slate-900 border border-slate-200 hover:border-slate-300 transition-all rounded-lg bg-white min-h-[40px] cursor-pointer"
-            >
-              接続解除 / Disconnect
-            </button>
+            {/* Confirmed inline: a sandboxed iframe blocks window.confirm, and a
+                blocked confirm returns false, so the button did nothing at all. */}
+            {confirmDisconnect ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-600">
+                  接続を解除しますか？（シート本体は削除されません）
+                </span>
+                <button
+                  onClick={() => {
+                    onSheetSelected(null as any);
+                    setConfirmDisconnect(false);
+                  }}
+                  className="px-3 py-2 text-xs font-extrabold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer"
+                >
+                  解除する
+                </button>
+                <button
+                  onClick={() => setConfirmDisconnect(false)}
+                  className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg bg-white transition-colors cursor-pointer"
+                >
+                  やめる
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmDisconnect(true)}
+                className="px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-600 hover:text-slate-900 border border-slate-200 hover:border-slate-300 transition-all rounded-lg bg-white min-h-[40px] cursor-pointer"
+              >
+                接続解除 / Disconnect
+              </button>
+            )}
           </div>
         </motion.div>
       ) : (

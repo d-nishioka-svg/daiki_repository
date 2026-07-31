@@ -18,15 +18,23 @@ export const ManualUpload: React.FC<ManualUploadProps> = ({
   isExtracting = false,
 }) => {
   const [isDragActive, setIsDragActive] = useState(false);
+  // Shown in place of alert(), which a sandboxed iframe suppresses, leaving a
+  // rejected file with no feedback at all.
+  const [fileError, setFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processFile = (file: File) => {
+    setFileError(null);
+
     if (!file.type.startsWith("image/")) {
-      alert("Please upload an image file.");
+      setFileError("画像ファイルを選択してください。（例: JPEG / PNG）");
       return;
     }
 
     const reader = new FileReader();
+    reader.onerror = () => {
+      setFileError("画像の読み込みに失敗しました。別のファイルでお試しください。");
+    };
     reader.onload = async (e) => {
       const base64 = e.target?.result as string;
       try {
@@ -70,6 +78,9 @@ export const ManualUpload: React.FC<ManualUploadProps> = ({
     if (e.target.files && e.target.files[0]) {
       processFile(e.target.files[0]);
     }
+    // Reset so picking the same file again still fires a change event; without
+    // this, clearing the preview and re-selecting the identical file did nothing.
+    e.target.value = "";
   };
 
   const onButtonClick = () => {
@@ -78,6 +89,11 @@ export const ManualUpload: React.FC<ManualUploadProps> = ({
 
   return (
     <div className="w-full">
+      {fileError && (
+        <div className="mb-3 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold">
+          {fileError}
+        </div>
+      )}
       {selectedPreview ? (
         <div className="relative rounded-xl overflow-hidden border-4 border-white shadow-xl bg-slate-950 flex items-center justify-center p-2 group h-72">
           <img
