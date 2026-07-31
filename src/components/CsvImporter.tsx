@@ -15,6 +15,15 @@ import {
   Trash2,
 } from "lucide-react";
 import { InspectionListItem } from "../types";
+import {
+  clearFolderHandle,
+  ensureReadPermission,
+  isFolderAccessSupported,
+  listStoreCodes,
+  loadFolderHandle,
+  pickFolder,
+  readStoreCsv,
+} from "../lib/folderAccess";
 
 interface CsvImporterProps {
   onImport: (items: InspectionListItem[]) => void;
@@ -43,12 +52,14 @@ export const storeCodeOf = (store: string): string | null => {
 export const parseCsvText = (text: string, defaultFileName: string = ""): { items: InspectionListItem[]; storeName: string } => {
   const rawLines = text.split(/\r?\n/).map((line) => line.trim());
   
-  // Check line 2 for store info like "納品先,211:北エリア（店舗名）"
+  // Check line 2 for store info like "取引先名,211:北海道三喜【手入力】"
   let storeFromLine2 = "";
   if (rawLines.length > 1) {
     const line2Cols = rawLines[1].split(",");
     if (line2Cols.length >= 2 && line2Cols[1]?.trim()) {
-      storeFromLine2 = line2Cols[1].trim();
+      // Drop the 【手入力】-style annotation so the same customer always produces the
+      // same store name regardless of how the export was generated.
+      storeFromLine2 = line2Cols[1].replace(/【[^】]*】/g, "").trim();
     }
   }
 
@@ -113,7 +124,28 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
   let qtyIdx = headers.findIndex((h) => h === "枚数" || h === "数量" || h === "予定数" || h === "予定数量");
   if (qtyIdx === -1) qtyIdx = headers.findIndex((h) => h.includes("枚数") || h.includes("予定") || h.includes("数量") || h.includes("個数") || h.includes("qty"));
 
-  if (headers.length >= 20) {
+  // 店別発注一覧表 exports do not line their header row up with their data rows:
+  // the quantity sits under the ｶﾗｰ heading at index 11 while 数量計 at index 15 is
+  // blank, and the JAN code at index 1 is headed 相手先商品ｺｰﾄﾞ while the part
+  // number is 自社品番 at index 7. Searching by name therefore picks the JAN code
+  // (it contains "商品") and an empty quantity column, which imported every row as
+  // "part number = barcode, quantity = 1" — nothing a scanned tag could ever match.
+  // For this layout the column positions are authoritative, not the headings.
+  const isOrderSheetLayout =
+    headers.length >= 20 &&
+    headers.some((h) => h.includes("自社品番")) &&
+    headers.some((h) => h.includes("店舗"));
+
+  if (isOrderSheetLayout) {
+    partNumIdx = 7;
+    colorIdx = 8;
+    sizeIdx = 9;
+    qtyIdx = 11;
+    // One file is one delivery for one customer code, so the file itself is the
+    // inspection unit. The row-level 店舗名 names the branch inside it and must not
+    // split the master into several stores.
+    storeIdx = -1;
+  } else if (headers.length >= 20) {
     if (partNumIdx === -1) partNumIdx = 7;
     if (colorIdx === -1) colorIdx = 8;
     if (sizeIdx === -1) sizeIdx = 9;
@@ -135,8 +167,8 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
   const parsedItems: InspectionListItem[] = [];
   let detectedStoreName = storeFromLine2;
 
-  // Counts repeats of the same store/part/size/color so each row gets a stable id.
-  const occurrences = new Map<string, number>();
+  // Collapses repeats of the same store/part/size/colour into one master row.
+  const aggregated = new Map<string, InspectionListItem>();
 
   // Try extracting store number from filename e.g. "211店別納品一覧表.CSV"
   const matchStoreNumInFile = defaultFileName.match(/^(\d{3})/);
@@ -171,25 +203,35 @@ export const parseCsvText = (text: string, defaultFileName: string = ""): { item
       continue;
     }
 
-    // Derive the id from the row's own contents rather than Date.now() and a random
-    // suffix. 変更数 overrides are keyed by this id and persisted, so a re-import of
-    // the same file used to orphan every override — a corrected "not delivered: 0"
-    // silently reverted to the CSV quantity, and the stale keys accumulated in
-    // localStorage forever. The occurrence counter keeps duplicate rows distinct.
+    // One garment spec is one master row. These files repeat the same
+    // part/size/colour once per branch, and the reconciliation matches on those
+    // three fields, so leaving them as separate rows made every scan count against
+    // each copy. Sum them instead.
+    //
+    // The id is derived from the row's own contents rather than Date.now() and a
+    // random suffix: 変更数 overrides are keyed by it and persisted, so a re-import
+    // of the same file used to orphan every override and silently revert a
+    // corrected "not delivered: 0" back to the CSV quantity.
     const identity = `${store}|${partNumber}|${size}|${color}`;
-    const occurrence = occurrences.get(identity) ?? 0;
-    occurrences.set(identity, occurrence + 1);
+    const qty = isNaN(expectedQty) ? 1 : expectedQty;
+    const existing = aggregated.get(identity);
 
-    parsedItems.push({
-      id: `csv_${identity}|${occurrence}`,
-      store,
-      partNumber,
-      size,
-      color,
-      expectedQty: isNaN(expectedQty) ? 1 : expectedQty,
-      actualQty: 0,
-    });
+    if (existing) {
+      existing.expectedQty += qty;
+    } else {
+      aggregated.set(identity, {
+        id: `csv_${identity}`,
+        store,
+        partNumber,
+        size,
+        color,
+        expectedQty: qty,
+        actualQty: 0,
+      });
+    }
   }
+
+  parsedItems.push(...aggregated.values());
 
   return { items: parsedItems, storeName: detectedStoreName };
 };
@@ -207,7 +249,15 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
     return localStorage.getItem("tag_extractor_folder_path") || "\\\\192.0.1.10\\e\\CSV\\";
   });
   const [targetStoreCode, setTargetStoreCode] = useState<string>("211");
-  
+
+  // Handle to the shared CSV folder. Once granted, entering a store code reads
+  // that store's file straight out of the folder with no further dialog.
+  const [folderHandle, setFolderHandle] =
+    useState<FileSystemDirectoryHandle | null>(null);
+  const [folderCodes, setFolderCodes] = useState<string[]>([]);
+  const [isReadingFolder, setIsReadingFolder] = useState(false);
+  const folderAccessSupported = isFolderAccessSupported();
+
   // Multi-CSV file cache map: storeCode -> file contents or parsed items.
   // Only holds files picked during this session; it is intentionally not persisted.
   const [loadedFilesCache, setLoadedFilesCache] = useState<Record<string, CachedFileInfo>>({});
@@ -254,6 +304,27 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
   useEffect(() => {
     localStorage.setItem("tag_extractor_folder_path", folderPath);
   }, [folderPath]);
+
+  // Restore the previously chosen folder. Only re-list it when the permission is
+  // still live — asking for it here would be outside a user gesture and fail.
+  useEffect(() => {
+    if (!folderAccessSupported) return;
+    let cancelled = false;
+
+    (async () => {
+      const handle = await loadFolderHandle();
+      if (!handle || cancelled) return;
+      setFolderHandle(handle);
+      if (await ensureReadPermission(handle, { promptIfNeeded: false })) {
+        const codes = await listStoreCodes(handle);
+        if (!cancelled) setFolderCodes(codes);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [folderAccessSupported]);
 
   // Decode array buffer with UTF-8 / Shift-JIS fallback
   const decodeCsvBuffer = (buffer: ArrayBuffer): string => {
@@ -352,8 +423,88 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
     });
   };
 
+  const handleChooseFolder = async () => {
+    setError(null);
+    setSuccess(null);
+
+    const handle = await pickFolder();
+    if (!handle) return;
+
+    setFolderHandle(handle);
+    const codes = await listStoreCodes(handle);
+    setFolderCodes(codes);
+    setSuccess(
+      codes.length > 0
+        ? `フォルダ「${handle.name}」を登録しました。${codes.length}店舗ぶんのCSVが見つかりました。以後は店舗番号を入れるだけで読み込めます。`
+        : `フォルダ「${handle.name}」を登録しました。ただし「◯◯◯店別納品一覧表.CSV」形式のファイルは見つかりませんでした。`,
+    );
+  };
+
+  const handleForgetFolder = async () => {
+    await clearFolderHandle();
+    setFolderHandle(null);
+    setFolderCodes([]);
+    setSuccess("登録済みフォルダを解除しました。");
+  };
+
+  /**
+   * Reads that store's CSV straight out of the registered folder. This is the
+   * path the operator actually wants: type 211, get 211's delivery list.
+   */
+  const handleLoadFromFolder = async (code: string): Promise<boolean> => {
+    const cleanCode = code.trim();
+    if (!folderHandle || !cleanCode) return false;
+
+    setIsReadingFolder(true);
+    try {
+      if (!(await ensureReadPermission(folderHandle))) {
+        setError(
+          "フォルダへのアクセスが許可されませんでした。「フォルダを選択」からもう一度許可してください。",
+        );
+        return false;
+      }
+
+      const csv = await readStoreCsv(folderHandle, cleanCode);
+      if (!csv) {
+        setError(
+          `フォルダ「${folderHandle.name}」内に「${cleanCode}店別納品一覧表.CSV」が見つかりません。` +
+            (folderCodes.length > 0
+              ? `（見つかっている店舗番号: ${folderCodes.join(", ")}）`
+              : ""),
+        );
+        return false;
+      }
+
+      const { items, storeName } = parseCsvText(decodeCsvBuffer(csv.buffer), csv.fileName);
+      if (items.length === 0) {
+        setError(`「${csv.fileName}」から有効な検品データを読み取れませんでした。`);
+        return false;
+      }
+
+      const resolvedStore = storeName || `${cleanCode}店`;
+      setLoadedFilesCache((prev) => ({
+        ...prev,
+        [cleanCode]: { fileName: csv.fileName, items, storeName: resolvedStore },
+      }));
+      onImport(items);
+      if (onSelectStore) onSelectStore(resolvedStore);
+
+      const totalQty = items.reduce((sum, item) => sum + item.expectedQty, 0);
+      setSuccess(
+        `「${csv.fileName}」を読み込みました。${resolvedStore} / ${items.length}型番 / 予定 ${totalQty}点 の検品を開始できます。`,
+      );
+      return true;
+    } catch (err: any) {
+      console.error("Reading the store CSV from the folder failed:", err);
+      setError(`フォルダからの読み込みに失敗しました: ${err?.message ?? err}`);
+      return false;
+    } finally {
+      setIsReadingFolder(false);
+    }
+  };
+
   // Switch store by 3-digit store code (e.g. "211")
-  const handleApplyStoreByCode = (code: string) => {
+  const handleApplyStoreByCode = async (code: string) => {
     // Badges can be keyed by a store name rather than a code, and stuffing that into
     // the digits-only field built a nonsense 対象ファイル指定 path out of it.
     if (/^\d*$/.test(code.trim())) {
@@ -364,6 +515,13 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
 
     const cleanCode = code.trim();
     if (!cleanCode) return;
+
+    // The registered folder is the authority: it always has the current file, so
+    // read it rather than serving a master list left over from an earlier import.
+    if (folderHandle && /^\d{3}$/.test(cleanCode)) {
+      if (await handleLoadFromFolder(cleanCode)) return;
+      // Reading failed and said why; fall through to whatever is already loaded.
+    }
 
     // Look up in loaded files cache first
     const cached = loadedFilesCache[cleanCode];
@@ -492,7 +650,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
           <div className="lg:col-span-7 space-y-1.5">
             <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
               <Folder className="w-3.5 h-3.5 text-blue-400" />
-              対象フォルダパス（控え用メモ）
+              対象フォルダパス
             </label>
             <input
               type="text"
@@ -501,9 +659,52 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
               placeholder="\\192.0.1.10\e\CSV\"
               className="w-full bg-slate-800 border border-slate-700 focus:border-blue-500 rounded-lg px-3 py-2 text-xs md:text-sm font-mono text-slate-100 focus:outline-none transition-all"
             />
-            <p className="text-[10px] text-slate-400 leading-relaxed">
-              ※ブラウザの制約上、このパスから自動でCSVを読み込むことはできません。実際の読み込みは下部の【CSVフォルダを一括選択】から行ってください。
-            </p>
+
+            {/* A browser cannot open a typed path — there is no API for it. The
+                operator grants access to that folder once here, and from then on
+                the store code alone is enough to read the file. */}
+            {folderAccessSupported ? (
+              folderHandle ? (
+                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-800/80 px-2.5 py-1 rounded-md">
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    フォルダ登録済: {folderHandle.name}
+                    {folderCodes.length > 0 && `（${folderCodes.length}店舗）`}
+                  </span>
+                  <button
+                    onClick={handleChooseFolder}
+                    className="text-[11px] font-bold text-slate-300 hover:text-white border border-slate-700 hover:border-slate-500 px-2.5 py-1 rounded-md transition-colors cursor-pointer"
+                  >
+                    変更
+                  </button>
+                  <button
+                    onClick={handleForgetFolder}
+                    className="text-[11px] font-bold text-slate-400 hover:text-rose-300 px-1.5 py-1 rounded-md transition-colors cursor-pointer"
+                  >
+                    解除
+                  </button>
+                </div>
+              ) : (
+                <div className="pt-0.5 space-y-1.5">
+                  <button
+                    onClick={handleChooseFolder}
+                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs rounded-lg flex items-center gap-2 transition-all cursor-pointer active:scale-95 shadow-sm"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    このフォルダを登録する（初回のみ）
+                  </button>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    ※ブラウザはパス文字列だけではフォルダを開けません。一度だけ上のボタンで
+                    上記フォルダを選んで許可すると、以降は店舗番号を入れるだけで該当CSVを直接読み込めます。
+                  </p>
+                </div>
+              )
+            ) : (
+              <p className="text-[10px] text-amber-300/90 leading-relaxed pt-0.5">
+                ※このブラウザはフォルダ登録に対応していません（Chrome / Edge のみ）。
+                下部の【CSVフォルダを一括選択】から読み込んでください。
+              </p>
+            )}
           </div>
 
           {/* Store Code Input (3 Digits) */}
@@ -537,10 +738,11 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
               
               <button
                 onClick={() => handleApplyStoreByCode(targetStoreCode)}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shrink-0 active:scale-95 shadow-sm"
+                disabled={isReadingFolder}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-extrabold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shrink-0 active:scale-95 shadow-sm"
               >
-                <Search className="w-3.5 h-3.5" />
-                店舗切替
+                <Search className={`w-3.5 h-3.5 ${isReadingFolder ? "animate-pulse" : ""}`} />
+                {isReadingFolder ? "読込中..." : folderHandle ? "読み込む" : "店舗切替"}
               </button>
             </div>
           </div>
