@@ -54,6 +54,14 @@ const useIsDesktop = () => {
   return isDesktop;
 };
 
+// Google will only hand a sign-in result back to an address it has been told to
+// trust, and the AI Studio preview is served from a throwaway host whose name
+// changes every time the app is rebuilt, so it can never be on that list. That
+// leaves the preview stuck on the login screen even though the rest of the app
+// works there. Vite sets DEV only when the dev server is serving, so this is
+// false in the published build and the bypass cannot reach production.
+const isPreviewEnvironment = (): boolean => import.meta.env.DEV === true;
+
 // A localStorage write must never take the app down. These run inside effects, so
 // a QuotaExceededError propagates out of the commit phase and unmounts the React
 // root: the operator gets a blank screen and loses the session mid-inspection.
@@ -80,6 +88,9 @@ export default function App() {
   // which made the ledger quietly stop advancing while the header still claimed
   // the sheet was connected. Surface it and offer an in-place re-auth.
   const [tokenExpired, setTokenExpired] = useState<boolean>(false);
+  // Signed-out preview of the interface, for working on the app where sign-in
+  // cannot complete. Everything that needs Google stays disabled.
+  const [previewMode, setPreviewMode] = useState<boolean>(false);
 
   // App settings state
   const [selectedSheet, setSelectedSheet] = useState<SpreadsheetInfo | null>(
@@ -685,6 +696,11 @@ export default function App() {
           );
 
           try {
+            if (isPreviewEnvironment() && previewMode) {
+              throw new Error(
+                "開発プレビューのためスプレッドシートには保存していません。検品数のカウントは有効です。",
+              );
+            }
             if (!token || !selectedSheet) {
               throw new Error(
                 "Google Spreadsheet target sheet coordination is not active.",
@@ -826,6 +842,12 @@ export default function App() {
 
   // 4. Persistence Handler for Exporting Form Input to Sheets
   const handleSaveToSheet = async (finalData: TagData): Promise<boolean> => {
+    if (isPreviewEnvironment() && previewMode) {
+      setGeneralError(
+        "開発プレビューではスプレッドシートに保存できません。保存まで確認する場合はPublish版をご利用ください。",
+      );
+      return false;
+    }
     if (!token || !selectedSheet) {
       setGeneralError("Authentication or target spreadsheet is missing.");
       return false;
@@ -942,6 +964,12 @@ export default function App() {
 
   // 4.5 Persistence Handler for saving specific queued historical item directly
   const handleSaveHistoryItem = async (entry: ScanHistoryEntry) => {
+    if (isPreviewEnvironment() && previewMode) {
+      setGeneralError(
+        "開発プレビューではスプレッドシートに保存できません。保存まで確認する場合はPublish版をご利用ください。",
+      );
+      return;
+    }
     if (!token || !selectedSheet) {
       setGeneralError("スプレッドシート接続が見つかりません。");
       return;
@@ -1094,24 +1122,31 @@ export default function App() {
             Sign in with Google
           </button>
 
-          {/* Google's sign-in popup cannot hand the result back to a cross-origin
-              iframe, so in the AI Studio preview it always reports itself as
-              closed by the user. Offer the way out rather than dead-ending. */}
-          {isEmbedded() && (
+          {/* Sign-in cannot complete on the development host, so offer a way to
+              reach the interface anyway. Never rendered in the published build. */}
+          {isPreviewEnvironment() && (
             <div className="w-full mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-left space-y-2.5">
               <p className="text-xs text-amber-800 font-bold leading-relaxed">
-                プレビュー表示のままではGoogleサインインを完了できません
+                開発プレビューではGoogleサインインを完了できません
               </p>
               <p className="text-[11px] text-amber-700 leading-relaxed">
-                認証ポップアップが埋め込み画面と通信できないためです。下のボタンでアプリを単独のタブで開いてからサインインしてください。
+                この画面のURLは作り直すたびに変わる一時的なもので、Googleの許可済みアドレスに登録できないためです。
+                サインインせずに画面と検品機能を確認できます。CSVの読み込み・タグ読取・数量の突合はそのまま試せます。
               </p>
               <button
-                onClick={() => window.open(window.location.href, "_blank", "noopener")}
+                onClick={() => {
+                  setPreviewMode(true);
+                  setNeedsAuth(false);
+                  setGeneralError(null);
+                }}
                 className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-2"
               >
                 <ArrowRight className="w-4 h-4" />
-                新しいタブで開く
+                サインインせずに画面を開く
               </button>
+              <p className="text-[10px] text-amber-600 leading-relaxed">
+                ※スプレッドシートへの保存だけは行えません。保存まで確認する場合はPublishしてください。
+              </p>
             </div>
           )}
 
@@ -1327,6 +1362,35 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* Signed-out preview. Say so permanently: every count on screen is real
+            work, but none of it is reaching the spreadsheet. */}
+        {isPreviewEnvironment() && previewMode && (
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="uppercase tracking-wider text-[11px] font-bold text-amber-800">
+                  開発プレビュー（サインインなし）
+                </p>
+                <p className="text-xs text-amber-700 font-normal leading-relaxed">
+                  CSV読み込み・タグ読取・数量の突合は通常どおり動作しますが、
+                  <strong>スプレッドシートへの保存は行われません。</strong>
+                  保存まで確認するにはPublish版でサインインしてください。
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setPreviewMode(false);
+                setNeedsAuth(true);
+              }}
+              className="shrink-0 px-4 py-2.5 border border-amber-300 hover:bg-amber-100 text-amber-800 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+            >
+              サインイン画面へ戻る
+            </button>
+          </div>
+        )}
 
         {/* Expired Google session: saving is broken until the token is renewed, and
             failed rows are excluded from the counts, so say so instead of letting
@@ -1640,10 +1704,10 @@ export default function App() {
                 />
 
                 <div
-                  className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-5 relative transition-opacity ${!selectedSheet ? "opacity-50 pointer-events-none" : ""}`}
+                  className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-5 relative transition-opacity ${!selectedSheet && !previewMode ? "opacity-50 pointer-events-none" : ""}`}
                 >
                   {/* Overlay Prompt to require Sheet Selection first */}
-                  {!selectedSheet && (
+                  {!selectedSheet && !previewMode && (
                     <div className="absolute inset-0 z-10 bg-white/75 backdrop-blur-[1px] flex flex-col items-center justify-center p-6 text-center rounded-2xl gap-2">
                       <Settings className="w-8 h-8 text-indigo-500 animate-spin" />
                       <p className="font-bold text-slate-800 text-sm">
@@ -1831,10 +1895,10 @@ export default function App() {
               {mobileTab === "scan" && (
                 <div className="flex flex-col gap-6 animate-fade-in">
                   <div
-                    className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-6 relative transition-opacity ${!selectedSheet ? "opacity-50 pointer-events-none" : ""}`}
+                    className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-6 relative transition-opacity ${!selectedSheet && !previewMode ? "opacity-50 pointer-events-none" : ""}`}
                   >
                     {/* Overlay Prompt to require Sheet Selection first */}
-                    {!selectedSheet && (
+                    {!selectedSheet && !previewMode && (
                       <div className="absolute inset-0 z-10 bg-white/75 backdrop-blur-[1px] flex flex-col items-center justify-center p-6 text-center rounded-2xl gap-2">
                         <Settings className="w-8 h-8 text-blue-600 animate-spin" />
                         <p className="font-bold text-slate-800 text-sm">
