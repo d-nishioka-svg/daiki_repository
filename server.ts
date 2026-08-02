@@ -13,6 +13,18 @@ const app = express();
 // makes the container fail its health check and the revision never goes live.
 const PORT = Number(process.env.PORT) || 3000;
 
+// Firebase's popup sign-in watches popup.closed to know when the flow finished.
+// Under the default Cross-Origin-Opener-Policy the browser severs the
+// opener/popup relationship, the check cannot run — the console reports
+// "Cross-Origin-Opener-Policy policy would block the window.closed call" — and
+// Firebase concludes the user dismissed the popup, failing every sign-in with
+// auth/popup-closed-by-user. same-origin-allow-popups keeps the isolation for
+// everything except windows this page opened itself.
+app.use((_req, res, next) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  next();
+});
+
 // Set up larger JSON limit for base64 image transfers
 app.use(express.json({ limit: "15mb" }));
 

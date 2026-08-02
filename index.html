@@ -1,9 +1,15 @@
 <!doctype html>
-<html lang="en">
+<!-- The interface is Japanese but the document claimed lang="en", so Chrome
+     auto-translated it. The translator rewrites text nodes underneath React,
+     which then fails to reconcile and throws "Failed to execute 'insertBefore'
+     on 'Node'", taking the whole screen down. Declare the real language and opt
+     out of translation. -->
+<html lang="ja" translate="no">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
+    <meta name="google" content="notranslate" />
+    <title>Tag Extractor / タグ抽出検品ツール</title>
   </head>
   <body>
     <div id="root"></div>
