@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { User } from "firebase/auth";
-import { initAuth, googleSignIn, logout } from "./lib/auth";
+import { initAuth, googleSignIn, logout, isEmbedded } from "./lib/auth";
 import { appendRow, isAuthError } from "./lib/sheets";
 import { playTone } from "./lib/audio";
 import { TagData, ScanHistoryEntry, SpreadsheetInfo, InspectionListItem } from "./types";
@@ -467,9 +467,17 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Login failed:", err);
-      if (err.code === "auth/popup-blocked") {
+      if (err.code === "app/embedded-auth-unavailable") {
+        setGeneralError(
+          "プレビュー（埋め込み表示）のままではGoogleサインインを完了できません。下の「新しいタブで開く」からアプリを単独のタブで開いてサインインしてください。",
+        );
+      } else if (err.code === "auth/popup-blocked") {
         setGeneralError(
           "Popup blocked by your browser. Attempting redirect fallback...",
+        );
+      } else if (err.code === "auth/unauthorized-domain") {
+        setGeneralError(
+          "このドメインがFirebaseの承認済みドメインに登録されていません。Firebaseコンソールの Authentication → Settings → Authorized domains に現在のドメインを追加してください。",
         );
       } else {
         setGeneralError(
@@ -1085,6 +1093,27 @@ export default function App() {
             )}
             Sign in with Google
           </button>
+
+          {/* Google's sign-in popup cannot hand the result back to a cross-origin
+              iframe, so in the AI Studio preview it always reports itself as
+              closed by the user. Offer the way out rather than dead-ending. */}
+          {isEmbedded() && (
+            <div className="w-full mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-left space-y-2.5">
+              <p className="text-xs text-amber-800 font-bold leading-relaxed">
+                プレビュー表示のままではGoogleサインインを完了できません
+              </p>
+              <p className="text-[11px] text-amber-700 leading-relaxed">
+                認証ポップアップが埋め込み画面と通信できないためです。下のボタンでアプリを単独のタブで開いてからサインインしてください。
+              </p>
+              <button
+                onClick={() => window.open(window.location.href, "_blank", "noopener")}
+                className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-2"
+              >
+                <ArrowRight className="w-4 h-4" />
+                新しいタブで開く
+              </button>
+            </div>
+          )}
 
           <p className="text-[11px] text-slate-400 mt-5 leading-normal max-w-xs">
             Tag Extractor connects directly to Google Drive/Sheets on your
