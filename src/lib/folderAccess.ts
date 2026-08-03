@@ -20,6 +20,16 @@ const FOLDER_KEY = "csv_folder";
 export const isFolderAccessSupported = (): boolean =>
   typeof window !== "undefined" && "showDirectoryPicker" in window;
 
+/** True when the page is inside a frame, where file pickers are not allowed. */
+export const isEmbeddedFrame = (): boolean => {
+  try {
+    return window.self !== window.top;
+  } catch {
+    // A cross-origin parent throws on access, which itself means we are embedded.
+    return true;
+  }
+};
+
 const openDb = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -92,8 +102,19 @@ export const ensureReadPermission = async (
   return (await anyHandle.requestPermission({ mode: "read" })) === "granted";
 };
 
+/**
+ * Opens the folder picker. Returns null when the operator simply closed the
+ * dialog, and throws with an explanation for anything else — most usefully the
+ * embedded case, where the browser refuses outright and the button would
+ * otherwise appear dead.
+ */
 export const pickFolder = async (): Promise<FileSystemDirectoryHandle | null> => {
-  if (!isFolderAccessSupported()) return null;
+  if (!isFolderAccessSupported()) {
+    throw new Error(
+      "このブラウザはフォルダ登録に対応していません。Chrome または Edge（パソコン版）をご利用ください。",
+    );
+  }
+
   try {
     const handle = await (window as any).showDirectoryPicker({
       id: "tag-extractor-csv",
@@ -102,11 +123,21 @@ export const pickFolder = async (): Promise<FileSystemDirectoryHandle | null> =>
     await saveFolderHandle(handle);
     return handle;
   } catch (err: any) {
-    // AbortError just means the operator closed the dialog.
-    if (err?.name !== "AbortError") {
-      console.warn("Folder selection failed:", err);
+    // The operator closed the dialog; nothing to report.
+    if (err?.name === "AbortError") return null;
+
+    console.warn("Folder selection failed:", err);
+
+    // A file picker cannot be opened from a cross-origin frame, which is exactly
+    // what the AI Studio preview is. Say so instead of failing silently.
+    if (err?.name === "SecurityError" || isEmbeddedFrame()) {
+      throw new Error(
+        "プレビュー枠の中からはフォルダを選択できません（ブラウザの制限）。" +
+          "アプリを単独のタブで開いてから登録してください。一度登録すれば以降は不要です。",
+      );
     }
-    return null;
+
+    throw new Error(`フォルダを選択できませんでした: ${err?.message ?? err}`);
   }
 };
 

@@ -18,6 +18,7 @@ import { InspectionListItem } from "../types";
 import {
   clearFolderHandle,
   ensureReadPermission,
+  isEmbeddedFrame,
   isFolderAccessSupported,
   listStoreCodes,
   loadFolderHandle,
@@ -428,7 +429,15 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
     setError(null);
     setSuccess(null);
 
-    const handle = await pickFolder();
+    let handle: FileSystemDirectoryHandle | null = null;
+    try {
+      handle = await pickFolder();
+    } catch (err: any) {
+      // Most often the embedded-frame refusal, which otherwise looks like a dead
+      // button because the browser blocks the dialog before it ever appears.
+      setError(err?.message ?? "フォルダを選択できませんでした。");
+      return;
+    }
     if (!handle) return;
 
     setFolderHandle(handle);
@@ -698,6 +707,14 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({
                     ※ブラウザはパス文字列だけではフォルダを開けません。一度だけ上のボタンで
                     上記フォルダを選んで許可すると、以降は店舗番号を入れるだけで該当CSVを直接読み込めます。
                   </p>
+                  {/* A file picker cannot open from a cross-origin frame, so warn
+                      before the click rather than after it silently fails. */}
+                  {isEmbeddedFrame() && (
+                    <p className="text-[10px] text-amber-300/90 leading-relaxed">
+                      ※プレビュー枠の中からはフォルダを選択できません（ブラウザの制限）。
+                      アプリを単独のタブで開いてから登録してください。
+                    </p>
+                  )}
                 </div>
               )
             ) : (
