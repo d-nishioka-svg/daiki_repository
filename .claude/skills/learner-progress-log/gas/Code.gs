@@ -1,77 +1,52 @@
 /**
- * 学習進捗管理スプレッドシート用 Web App (GAS)
+ * 学習進捗管理スプレッドシート用 Apps Script
  *
- * 目的:
- *   Claude(チャット/Claude Code)からHTTP経由で「どの企業シートの、どの受講者列に、
- *   どんな記録を追記するか」だけを受け取り、実際のセル書き込みをこのスクリプト側で
- *   行う。スプレッドシートの実体をまるごとやり取りしないため、ファイルサイズや
- *   転写(文字コードの変換)の問題が起きない。
+ * 経緯:
+ *   当初はWebアプリ(HTTP経由でClaudeから直接書き込む方式)を試みたが、
+ *   1) Claude Code実行環境のネットワークポリシーでscript.google.comへの通信がブロックされる
+ *   2) 会社のGoogle Workspaceポリシーで「全員(匿名)アクセス」のデプロイができない
+ *   の2つが重なり、外部からの直接呼び出しは実質不可能だった。
+ *
+ *   そこで方針を変更: スプレッドシートに直接メニューを追加し、Claudeが用意した
+ *   内容を、シートの持ち主自身がメニューからワンクリックで書き込む方式にした。
+ *   外部との通信が一切発生しないため、上記どちらの制限も受けない。
  *
  * 前提とするシート構造:
  *   - 1つのスプレッドシートの中に、企業ごとのシート(タブ)がある
  *   - 各シートの1行目(ヘッダー行)、B列以降に受講者名が入っている(A列は使わない想定)
  *   - 各受講者列に、相談記録が上から下に積み上がっている
  *
- * デプロイ方法は同じフォルダの DEPLOY.md を参照。
+ * 使い方は同じフォルダの DEPLOY.md を参照。
  */
 
-// ===== エントリーポイント =====
+// ===== メニュー =====
 
-function doPost(e) {
-  var lock = LockService.getScriptLock();
-  var gotLock = lock.tryLock(30000);
-  if (!gotLock) {
-    return jsonResponse_({ success: false, error: 'ロックの取得に失敗しました。少し待ってから再試行してください。' });
-  }
-
-  try {
-    var body = JSON.parse(e.postData.contents);
-
-    var props = PropertiesService.getScriptProperties();
-    var expectedSecret = props.getProperty('SECRET');
-    if (!expectedSecret || body.secret !== expectedSecret) {
-      return jsonResponse_({ success: false, error: 'unauthorized' });
-    }
-
-    var sheetId = props.getProperty('SHEET_ID');
-    if (!sheetId) {
-      return jsonResponse_({ success: false, error: 'SHEET_ID がスクリプト プロパティに設定されていません' });
-    }
-    var ss = SpreadsheetApp.openById(sheetId);
-
-    if (body.action === 'listStructure') {
-      return jsonResponse_({ success: true, structure: listStructure_(ss) });
-    } else if (body.action === 'appendEntries') {
-      var results = appendEntries_(ss, body.entries || []);
-      var allOk = results.every(function (r) { return r.status === 'written'; });
-      return jsonResponse_({ success: allOk, results: results });
-    } else {
-      return jsonResponse_({ success: false, error: 'unknown action: ' + body.action });
-    }
-  } catch (err) {
-    return jsonResponse_({ success: false, error: String(err) });
-  } finally {
-    lock.releaseLock();
-  }
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('学習進捗ログ')
+    .addItem('記録を追加', 'showAddEntryDialog')
+    .addToUi();
 }
 
-// 動作確認用(ブラウザでURLを直接開いたとき用)。書き込みは行わない。
-function doGet(e) {
-  return jsonResponse_({ success: true, message: 'learner-progress-log Web App is running. POST を使ってください。' });
+function showAddEntryDialog() {
+  var html = HtmlService.createHtmlOutput(buildDialogHtml_())
+    .setWidth(520)
+    .setHeight(600);
+  SpreadsheetApp.getUi().showModalDialog(html, '学習進捗ログを追加');
 }
 
-function jsonResponse_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+// ダイアログ側のJavaScriptから呼ばれる。シート名・受講者名の一覧を返す。
+function getStructureForDialog() {
+  return listStructure_(SpreadsheetApp.getActiveSpreadsheet());
+}
+
+// ダイアログ側のJavaScriptから呼ばれる。entries: [{ sheetName, learner, text }, ...]
+function submitEntries(entries) {
+  return appendEntries_(SpreadsheetApp.getActiveSpreadsheet(), entries);
 }
 
 // ===== 構造の取得 =====
 
-/**
- * 全シートについて、シート名と「受講者名(見出し)ごとの最終使用行」の一覧を返す。
- * Claude側はこれを見て、企業名・受講者名の表記ゆれを判断してから
- * appendEntries を呼び出す想定。
- */
 function listStructure_(ss) {
   var sheets = ss.getSheets();
   var out = [];
@@ -84,14 +59,11 @@ function listStructure_(ss) {
     for (var c = 0; c < headers.length; c++) {
       var name = headers[c];
       if (name === '' || name === null) continue;
-      var colIndex = c + 2; // B=2
-      learners.push({
-        learner: String(name),
-        columnA1: columnToLetter_(colIndex),
-        lastUsedRow: getLastUsedRow_(sh, colIndex)
-      });
+      learners.push({ learner: String(name) });
     }
-    out.push({ sheetName: sh.getName(), learners: learners });
+    if (learners.length > 0) {
+      out.push({ sheetName: sh.getName(), learners: learners });
+    }
   }
   return out;
 }
@@ -100,7 +72,7 @@ function listStructure_(ss) {
 
 /**
  * entries: [{ sheetName, learner, text }, ...]
- * 集団相談の場合、Claude側が同じ text を持つ entry を複数件並べて渡す。
+ * 集団相談の場合、ダイアログ側で同じ text を持つ行を複数追加して渡す。
  */
 function appendEntries_(ss, entries) {
   var results = [];
@@ -161,12 +133,57 @@ function getLastUsedRow_(sheet, col) {
   return lastRow;
 }
 
-function columnToLetter_(col) {
-  var letter = '';
-  while (col > 0) {
-    var rem = (col - 1) % 26;
-    letter = String.fromCharCode(65 + rem) + letter;
-    col = Math.floor((col - 1) / 26);
-  }
-  return letter;
+// ===== ダイアログのHTML =====
+
+function buildDialogHtml_() {
+  return '<!DOCTYPE html><html><head><base target="_top">' +
+    '<style>' +
+    'body{font-family:Arial,sans-serif;font-size:13px;padding:8px;}' +
+    '.row{border:1px solid #ccc;border-radius:6px;padding:8px;margin-bottom:8px;position:relative;}' +
+    'label{display:block;margin-top:6px;font-weight:bold;}' +
+    'select,textarea{width:100%;box-sizing:border-box;margin-top:2px;font-family:inherit;}' +
+    'textarea{height:110px;}' +
+    'button{margin-top:8px;padding:6px 12px;}' +
+    '#status{margin-top:10px;white-space:pre-wrap;font-size:12px;color:#333;}' +
+    '.remove{position:absolute;top:6px;right:8px;color:#c00;cursor:pointer;font-size:12px;}' +
+    '</style></head><body>' +
+    '<p style="font-size:12px;color:#555;">Claudeが作成した記録テキストを、対象の企業・受講者ごとに貼り付けてください。' +
+    '集団相談の場合は「対象者を追加」で人数分の行を増やし、同じ文章を貼り付けてください。</p>' +
+    '<div id="rows"></div>' +
+    '<button onclick="addRow()">+ 対象者を追加(集団相談の場合)</button><br>' +
+    '<button onclick="submitAll()" style="background:#1a73e8;color:#fff;border:none;border-radius:4px;">この内容で書き込む</button>' +
+    '<div id="status"></div>' +
+    '<script>' +
+    'let structure=[];let rowCount=0;' +
+    'google.script.run.withSuccessHandler(function(data){structure=data;addRow();})' +
+    '.withFailureHandler(function(err){document.getElementById("status").textContent="読み込みエラー: "+err.message;})' +
+    '.getStructureForDialog();' +
+    'function esc(s){return String(s).replace(/[&<>"\']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c];});}' +
+    'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
+    'const opts=structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");' +
+    'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeRow("+id+")\\">✕ 削除</span>"+' +
+    '"<label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+opts+"</select>"+' +
+    '"<label>受講者</label><select id=\\"learner-"+id+"\\"></select>"+' +
+    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"ここに貼り付け\\"></textarea>";' +
+    'document.getElementById("rows").appendChild(div);updateLearners(id);}' +
+    'function updateLearners(id){const sheetName=document.getElementById("sheet-"+id).value;' +
+    'const sheet=structure.find(function(s){return s.sheetName===sheetName;});' +
+    'const sel=document.getElementById("learner-"+id);' +
+    'sel.innerHTML=(sheet?sheet.learners:[]).map(function(l){return "<option value=\\""+esc(l.learner)+"\\">"+esc(l.learner)+"</option>";}).join("");}' +
+    'function removeRow(id){const el=document.getElementById("row-"+id);if(el)el.remove();}' +
+    'function submitAll(){const rows=document.querySelectorAll(".row");const entries=[];' +
+    'rows.forEach(function(row){const id=row.id.split("-")[1];' +
+    'const sheetName=document.getElementById("sheet-"+id).value;' +
+    'const learner=document.getElementById("learner-"+id).value;' +
+    'const text=document.getElementById("text-"+id).value;' +
+    'if(text.trim())entries.push({sheetName:sheetName,learner:learner,text:text});});' +
+    'if(entries.length===0){document.getElementById("status").textContent="記録内容が入力されていません。";return;}' +
+    'document.getElementById("status").textContent="書き込み中...";' +
+    'google.script.run.withSuccessHandler(function(results){' +
+    'document.getElementById("status").textContent=results.map(function(r){' +
+    'return (r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "+(r.status==="written"?r.cell:r.error);' +
+    '}).join("\\n");' +
+    '}).withFailureHandler(function(err){document.getElementById("status").textContent="エラー: "+err.message;})' +
+    '.submitEntries(entries);}' +
+    '</script></body></html>';
 }
