@@ -142,6 +142,64 @@ function getLastUsedRow_(sheet, col) {
   return lastRow;
 }
 
+// ===== 進捗確認(閲覧) =====
+
+// Webアプリ側のJavaScriptから呼ばれる。指定シートの各受講者の直近の記録を一覧で返す。
+function getCompanyOverview(sheetName) {
+  return getCompanyOverview_(SpreadsheetApp.getActiveSpreadsheet(), sheetName);
+}
+
+function getCompanyOverview_(ss, sheetName) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('シートが見つかりません: ' + sheetName);
+  var lastCol = sh.getLastColumn();
+  if (lastCol < 2) return [];
+  var headers = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
+  var out = [];
+  for (var c = 0; c < headers.length; c++) {
+    var name = headers[c];
+    if (name === '' || name === null) continue;
+    var col = c + 2; // B列基準なので+2
+    var lastRow = getLastUsedRow_(sh, col);
+    var recordCount = Math.max(0, lastRow - 1); // ヘッダー行を除く件数
+    var lastText = recordCount > 0 ? String(sh.getRange(lastRow, col).getValue()) : '';
+    out.push({
+      learner: String(name),
+      recordCount: recordCount,
+      lastDate: extractDate_(lastText),
+      lastText: lastText
+    });
+  }
+  return out;
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。指定受講者の全記録を新しい順に返す。
+function getLearnerHistory(sheetName, learner) {
+  return getLearnerHistory_(SpreadsheetApp.getActiveSpreadsheet(), sheetName, learner);
+}
+
+function getLearnerHistory_(ss, sheetName, learner) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('シートが見つかりません: ' + sheetName);
+  var col = findLearnerColumn_(sh, learner);
+  if (col === -1) throw new Error('受講者列が見つかりません: ' + learner);
+  var lastRow = getLastUsedRow_(sh, col);
+  var records = [];
+  for (var r = 2; r <= lastRow; r++) {
+    var v = sh.getRange(r, col).getValue();
+    if (v === '' || v === null) continue;
+    records.push({ row: r, date: extractDate_(String(v)), text: String(v) });
+  }
+  records.reverse(); // 新しい記録を先頭に
+  return records;
+}
+
+// 記録文の先頭にある「📅 YYYY-MM-DD」から日付だけ取り出す(見つからなければ空文字)
+function extractDate_(text) {
+  var m = /📅\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/.exec(text || '');
+  return m ? m[1] : '';
+}
+
 // ===== ダイアログのHTML =====
 
 function buildDialogHtml_() {
@@ -317,10 +375,22 @@ function buildWebAppHtml_() {
     '.remove{position:absolute;top:8px;right:10px;color:#c00;cursor:pointer;font-size:12px;}' +
     'button{padding:8px 14px;margin:4px 8px 4px 0;border-radius:4px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;}' +
     '.primary{background:#1a73e8;color:#fff;border:none;}' +
-    '#status{margin-top:14px;white-space:pre-wrap;font-size:13px;color:#333;}' +
+    '#status,#companyOverview,#learnerHistory{margin-top:14px;white-space:pre-wrap;font-size:13px;color:#333;}' +
     '.hint{font-size:12px;color:#666;margin-top:2px;}' +
+    '.tabs{margin-bottom:16px;border-bottom:1px solid #ddd;}' +
+    '.tabbtn{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:8px 4px;margin-right:16px;font-size:14px;color:#666;}' +
+    '.tabbtn.active{border-bottom-color:#1a73e8;color:#1a73e8;font-weight:bold;}' +
+    '.card{border:1px solid #ddd;border-radius:6px;padding:10px;margin-bottom:8px;}' +
+    '.cardtext{white-space:pre-wrap;margin-top:6px;font-size:13px;}' +
     '</style></head><body>' +
-    '<h2>学習進捗ログ: VTTから自動作成</h2>' +
+
+    '<div class="tabs">' +
+    '<button type="button" class="tabbtn active" id="tabbtn-write" onclick="showTab(\'write\')">記録を追加</button>' +
+    '<button type="button" class="tabbtn" id="tabbtn-view" onclick="showTab(\'view\')">進捗を確認</button>' +
+    '</div>' +
+
+    '<div id="writeTab">' +
+    '<h2>VTTから自動作成</h2>' +
     '<p class="hint">Zoomの文字起こし(.vtt)をアップロードして「AIで要約を作成」を押すと、下の記録内容欄に' +
     '下書きが自動で入ります。内容を確認・必要なら修正してから「この内容で書き込む」を押してください。</p>' +
 
@@ -333,10 +403,24 @@ function buildWebAppHtml_() {
     '<button class="primary" onclick="generateAll()">AIで要約を作成</button>' +
     '<button class="primary" onclick="submitAll()">この内容で書き込む</button>' +
     '<div id="status"></div>' +
+    '</div>' +
+
+    '<div id="viewTab" style="display:none">' +
+    '<h2>進捗を確認</h2>' +
+    '<p class="hint">企業を選ぶと、その企業の全受講者について直近の記録を一覧できます。' +
+    '受講者を選んで「全記録を見る」を押すと、その人の全期間の記録を新しい順に確認できます。</p>' +
+    '<div class="field"><label>企業(シート)</label><select id="viewSheet" onchange="onViewSheetChange()"></select></div>' +
+    '<button onclick="loadCompanyOverview()">この企業の最新状況を一覧</button>' +
+    '<div id="companyOverview"></div>' +
+    '<hr>' +
+    '<div class="field"><label>受講者</label><select id="viewLearner"></select></div>' +
+    '<button onclick="loadLearnerHistory()">この受講者の全記録を見る</button>' +
+    '<div id="learnerHistory"></div>' +
+    '</div>' +
 
     '<script>' +
     'let structure=[];let rowCount=0;let vttText="";' +
-    'google.script.run.withSuccessHandler(function(data){structure=data;addRow();})' +
+    'google.script.run.withSuccessHandler(function(data){structure=data;addRow();populateViewSheet();})' +
     '.withFailureHandler(function(err){setStatus("読み込みエラー: "+err.message);})' +
     '.getStructureForDialog();' +
 
@@ -347,6 +431,12 @@ function buildWebAppHtml_() {
     'reader.readAsText(f);});' +
 
     'function esc(s){return String(s).replace(/[&<>"\']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c];});}' +
+
+    'function showTab(name){' +
+    'document.getElementById("writeTab").style.display=(name==="write")?"":"none";' +
+    'document.getElementById("viewTab").style.display=(name==="view")?"":"none";' +
+    'document.getElementById("tabbtn-write").classList.toggle("active",name==="write");' +
+    'document.getElementById("tabbtn-view").classList.toggle("active",name==="view");}' +
 
     'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
     'const opts=structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");' +
@@ -398,5 +488,55 @@ function buildWebAppHtml_() {
     '}).join("\\n"));' +
     '}).withFailureHandler(function(err){setStatus("書き込みエラー: "+err.message);})' +
     '.submitEntries(entries);}' +
+
+    'function populateViewSheet(){' +
+    'const sel=document.getElementById("viewSheet");' +
+    'sel.innerHTML=structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");' +
+    'onViewSheetChange();}' +
+
+    'function onViewSheetChange(){' +
+    'const sheetName=document.getElementById("viewSheet").value;' +
+    'const sheet=structure.find(function(s){return s.sheetName===sheetName;});' +
+    'const sel=document.getElementById("viewLearner");' +
+    'sel.innerHTML=(sheet?sheet.learners:[]).map(function(l){return "<option value=\\""+esc(l.learner)+"\\">"+esc(l.learner)+"</option>";}).join("");}' +
+
+    'function loadCompanyOverview(){' +
+    'const sheetName=document.getElementById("viewSheet").value;' +
+    'const el=document.getElementById("companyOverview");el.textContent="読み込み中...";' +
+    'google.script.run.withSuccessHandler(renderCompanyOverview)' +
+    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
+    '.getCompanyOverview(sheetName);}' +
+
+    'function renderCompanyOverview(list){' +
+    'const el=document.getElementById("companyOverview");el.innerHTML="";' +
+    'if(list.length===0){el.textContent="受講者が見つかりません。";return;}' +
+    'list.forEach(function(item){' +
+    'const card=document.createElement("div");card.className="card";' +
+    'card.innerHTML="<b>"+esc(item.learner)+"</b> <span class=\\"hint\\">(記録"+item.recordCount+"件"' +
+    '+(item.lastDate?" / 直近: "+esc(item.lastDate):"")+")</span>"' +
+    '+"<div class=\\"cardtext\\">"+esc(item.lastText||"(記録なし)")+"</div>";' +
+    'const btn=document.createElement("button");btn.textContent="全履歴を見る";' +
+    'btn.addEventListener("click",function(){selectLearnerAndLoad(item.learner);});' +
+    'card.appendChild(btn);el.appendChild(card);});}' +
+
+    'function selectLearnerAndLoad(learner){' +
+    'document.getElementById("viewLearner").value=learner;' +
+    'loadLearnerHistory();}' +
+
+    'function loadLearnerHistory(){' +
+    'const sheetName=document.getElementById("viewSheet").value;' +
+    'const learner=document.getElementById("viewLearner").value;' +
+    'const el=document.getElementById("learnerHistory");el.textContent="読み込み中...";' +
+    'google.script.run.withSuccessHandler(renderLearnerHistory)' +
+    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
+    '.getLearnerHistory(sheetName,learner);}' +
+
+    'function renderLearnerHistory(records){' +
+    'const el=document.getElementById("learnerHistory");el.innerHTML="";' +
+    'if(records.length===0){el.textContent="記録がありません。";return;}' +
+    'records.forEach(function(r){' +
+    'const card=document.createElement("div");card.className="card";' +
+    'card.innerHTML="<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
+    'el.appendChild(card);});}' +
     '</script></body></html>';
 }
