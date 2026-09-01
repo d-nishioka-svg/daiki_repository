@@ -365,24 +365,53 @@ function buildWebAppHtml_() {
   return '<!DOCTYPE html><html><head><base target="_top">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
     '<style>' +
-    'body{font-family:Arial,sans-serif;font-size:14px;padding:16px;max-width:640px;margin:0 auto;}' +
-    'h2{margin-top:0;}' +
-    '.field{margin-bottom:14px;}' +
-    'label{display:block;font-weight:bold;margin-bottom:4px;}' +
-    'input[type=file],input[type=date],select,textarea{width:100%;box-sizing:border-box;font-family:inherit;font-size:14px;}' +
-    '.row{border:1px solid #ccc;border-radius:6px;padding:10px;margin-bottom:10px;position:relative;}' +
-    '.row textarea{height:160px;margin-top:6px;}' +
-    '.remove{position:absolute;top:8px;right:10px;color:#c00;cursor:pointer;font-size:12px;}' +
-    'button{padding:8px 14px;margin:4px 8px 4px 0;border-radius:4px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;}' +
-    '.primary{background:#1a73e8;color:#fff;border:none;}' +
-    '#status,#companyOverview,#learnerHistory{margin-top:14px;white-space:pre-wrap;font-size:13px;color:#333;}' +
-    '.hint{font-size:12px;color:#666;margin-top:2px;}' +
-    '.tabs{margin-bottom:16px;border-bottom:1px solid #ddd;}' +
-    '.tabbtn{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:8px 4px;margin-right:16px;font-size:14px;color:#666;}' +
-    '.tabbtn.active{border-bottom-color:#1a73e8;color:#1a73e8;font-weight:bold;}' +
-    '.card{border:1px solid #ddd;border-radius:6px;padding:10px;margin-bottom:8px;}' +
-    '.cardtext{white-space:pre-wrap;margin-top:6px;font-size:13px;}' +
+    ':root{--sf-blue:#0176d3;--sf-blue-dark:#014486;--sf-navy:#16325c;--sf-text:#3e3e3c;' +
+    '--sf-muted:#706e6b;--sf-border:#dddbda;--sf-bg:#f3f2f2;--sf-danger:#ba0517;--sf-input-border:#c9c7c5;}' +
+    '*{box-sizing:border-box;}' +
+    'body{margin:0;background:var(--sf-bg);color:var(--sf-text);' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;font-size:14px;}' +
+    '.sf-header{background:var(--sf-navy);color:#fff;padding:14px 20px;font-size:16px;font-weight:700;' +
+    'display:flex;align-items:center;gap:8px;}' +
+    '.sf-dot{width:9px;height:9px;border-radius:50%;background:var(--sf-blue);display:inline-block;flex:none;}' +
+    '.sf-container{max-width:680px;margin:20px auto;padding:0 16px 40px;}' +
+    '.sf-card{background:#fff;border:1px solid var(--sf-border);border-radius:8px;' +
+    'box-shadow:0 1px 3px rgba(0,0,0,.08);padding:20px 20px 24px;}' +
+    'h2{margin:0 0 4px;font-size:17px;font-weight:700;color:var(--sf-navy);}' +
+    '.hint{font-size:12.5px;color:var(--sf-muted);line-height:1.5;margin:0 0 18px;}' +
+    '.field{margin-bottom:16px;}' +
+    'label{display:block;font-weight:600;font-size:13px;color:var(--sf-text);margin-bottom:5px;}' +
+    'input[type=file],input[type=date],select,textarea{width:100%;font-family:inherit;font-size:14px;' +
+    'color:var(--sf-text);border:1px solid var(--sf-input-border);border-radius:4px;padding:8px 10px;background:#fff;}' +
+    'input[type=file]{padding:6px;}' +
+    'select:focus,input:focus,textarea:focus{outline:none;border-color:var(--sf-blue);box-shadow:0 0 0 1px var(--sf-blue);}' +
+    '.row{border:1px solid var(--sf-border);background:#fafaf9;border-radius:8px;padding:14px;margin-bottom:14px;position:relative;}' +
+    '.row textarea{height:150px;margin-top:0;}' +
+    '.remove{position:absolute;top:12px;right:14px;color:var(--sf-danger);cursor:pointer;font-size:12px;font-weight:600;}' +
+    '.remove:hover{text-decoration:underline;}' +
+    'button{font-family:inherit;padding:8px 16px;margin:0 8px 8px 0;border-radius:4px;' +
+    'border:1px solid var(--sf-input-border);background:#fff;color:var(--sf-blue);font-size:13px;font-weight:600;cursor:pointer;}' +
+    'button:hover{background:var(--sf-bg);}' +
+    '.primary{background:var(--sf-blue);border-color:var(--sf-blue);color:#fff;}' +
+    '.primary:hover{background:var(--sf-blue-dark);border-color:var(--sf-blue-dark);}' +
+    '#status{margin-top:16px;white-space:pre-wrap;font-size:13px;color:var(--sf-text);}' +
+    '.tabs{display:flex;gap:4px;border-bottom:1px solid var(--sf-border);margin-bottom:20px;}' +
+    '.tabbtn{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;' +
+    'padding:10px 14px;margin:0;font-size:14px;font-weight:600;color:var(--sf-muted);cursor:pointer;}' +
+    '.tabbtn:hover{color:var(--sf-blue);background:none;}' +
+    '.tabbtn.active{border-bottom-color:var(--sf-blue);color:var(--sf-blue);}' +
+    '.card{border:1px solid var(--sf-border);border-radius:8px;padding:14px;margin-bottom:10px;background:#fff;}' +
+    '.card b{color:var(--sf-navy);font-size:14px;}' +
+    '.badge{display:inline-block;background:#eaf5fe;color:var(--sf-blue-dark);border-radius:10px;' +
+    'padding:2px 10px;font-size:11.5px;font-weight:600;margin-left:6px;}' +
+    '.badge-muted{background:var(--sf-bg);color:var(--sf-muted);}' +
+    '.cardtext{white-space:pre-wrap;margin-top:8px;font-size:13px;color:var(--sf-text);line-height:1.55;' +
+    'background:#faf9f8;border:1px solid #f0efed;border-radius:6px;padding:10px;}' +
+    '#companyOverview,#learnerHistory{margin-top:14px;}' +
+    'hr{border:none;border-top:1px solid var(--sf-border);margin:22px 0;}' +
     '</style></head><body>' +
+
+    '<div class="sf-header"><span class="sf-dot"></span>学習進捗ログ</div>' +
+    '<div class="sf-container"><div class="sf-card">' +
 
     '<div class="tabs">' +
     '<button type="button" class="tabbtn active" id="tabbtn-write" onclick="showTab(\'write\')">記録を追加</button>' +
@@ -417,6 +446,8 @@ function buildWebAppHtml_() {
     '<button onclick="loadLearnerHistory()">この受講者の全記録を見る</button>' +
     '<div id="learnerHistory"></div>' +
     '</div>' +
+
+    '</div></div>' +
 
     '<script>' +
     'let structure=[];let rowCount=0;let vttText="";' +
@@ -512,8 +543,9 @@ function buildWebAppHtml_() {
     'if(list.length===0){el.textContent="受講者が見つかりません。";return;}' +
     'list.forEach(function(item){' +
     'const card=document.createElement("div");card.className="card";' +
-    'card.innerHTML="<b>"+esc(item.learner)+"</b> <span class=\\"hint\\">(記録"+item.recordCount+"件"' +
-    '+(item.lastDate?" / 直近: "+esc(item.lastDate):"")+")</span>"' +
+    'card.innerHTML="<b>"+esc(item.learner)+"</b>"' +
+    '+"<span class=\\"badge\\">記録"+item.recordCount+"件</span>"' +
+    '+(item.lastDate?"<span class=\\"badge badge-muted\\">直近 "+esc(item.lastDate)+"</span>":"")' +
     '+"<div class=\\"cardtext\\">"+esc(item.lastText||"(記録なし)")+"</div>";' +
     'const btn=document.createElement("button");btn.textContent="全履歴を見る";' +
     'btn.addEventListener("click",function(){selectLearnerAndLoad(item.learner);});' +
@@ -536,7 +568,8 @@ function buildWebAppHtml_() {
     'if(records.length===0){el.textContent="記録がありません。";return;}' +
     'records.forEach(function(r){' +
     'const card=document.createElement("div");card.className="card";' +
-    'card.innerHTML="<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
+    'card.innerHTML=(r.date?"<span class=\\"badge\\">"+esc(r.date)+"</span>":"")' +
+    '+"<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
     'el.appendChild(card);});}' +
     '</script></body></html>';
 }
