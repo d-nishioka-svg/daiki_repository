@@ -200,6 +200,55 @@ function extractDate_(text) {
   return m ? m[1] : '';
 }
 
+// Webアプリ側のJavaScriptから呼ばれる。企業(シート)内の全受講者を横並びにした表形式データを返す。
+// 行 = 各受講者にとっての「何回目の記録か」、列 = 受講者(スプレッドシートの列並びと同じ順)。
+// 実際の日付を揃えるのではなく、各受講者ごとの記録の積み上がり順(1回目・2回目...)で揃える。
+function getCompanyMatrix(sheetName) {
+  return getCompanyMatrix_(SpreadsheetApp.getActiveSpreadsheet(), sheetName);
+}
+
+function getCompanyMatrix_(ss, sheetName) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('シートが見つかりません: ' + sheetName);
+  var lastCol = sh.getLastColumn();
+  if (lastCol < 2) return { learners: [], rows: [] };
+  var headers = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
+
+  var learners = [];
+  var perLearnerRecords = [];
+  for (var c = 0; c < headers.length; c++) {
+    var name = headers[c];
+    if (name === '' || name === null) continue;
+    var col = c + 2; // B列基準なので+2
+    learners.push(String(name));
+
+    var lastRow = getLastUsedRow_(sh, col);
+    var records = [];
+    if (lastRow >= 2) {
+      var vals = sh.getRange(2, col, lastRow - 1, 1).getValues();
+      for (var r = 0; r < vals.length; r++) {
+        var v = vals[r][0];
+        if (v !== '' && v !== null) records.push(String(v));
+      }
+    }
+    perLearnerRecords.push(records);
+  }
+
+  var maxCount = 0;
+  for (var i = 0; i < perLearnerRecords.length; i++) {
+    if (perLearnerRecords[i].length > maxCount) maxCount = perLearnerRecords[i].length;
+  }
+
+  var rows = [];
+  for (var n = 0; n < maxCount; n++) {
+    var cells = perLearnerRecords.map(function (recs) {
+      return n < recs.length ? recs[n] : null;
+    });
+    rows.push({ index: n + 1, cells: cells });
+  }
+  return { learners: learners, rows: rows };
+}
+
 // ===== ダイアログのHTML =====
 
 function buildDialogHtml_() {
@@ -373,7 +422,8 @@ function buildWebAppHtml_() {
     '.sf-header{background:var(--sf-navy);color:#fff;padding:14px 20px;font-size:16px;font-weight:700;' +
     'display:flex;align-items:center;gap:8px;}' +
     '.sf-dot{width:9px;height:9px;border-radius:50%;background:var(--sf-blue);display:inline-block;flex:none;}' +
-    '.sf-container{max-width:680px;margin:20px auto;padding:0 16px 40px;}' +
+    '.sf-container{max-width:680px;margin:20px auto;padding:0 16px 40px;transition:max-width .15s;}' +
+    '.sf-container.wide{max-width:1200px;}' +
     '.sf-card{background:#fff;border:1px solid var(--sf-border);border-radius:8px;' +
     'box-shadow:0 1px 3px rgba(0,0,0,.08);padding:20px 20px 24px;}' +
     'h2{margin:0 0 4px;font-size:17px;font-weight:700;color:var(--sf-navy);}' +
@@ -406,12 +456,21 @@ function buildWebAppHtml_() {
     '.badge-muted{background:var(--sf-bg);color:var(--sf-muted);}' +
     '.cardtext{white-space:pre-wrap;margin-top:8px;font-size:13px;color:var(--sf-text);line-height:1.55;' +
     'background:#faf9f8;border:1px solid #f0efed;border-radius:6px;padding:10px;}' +
-    '#companyOverview,#learnerHistory{margin-top:14px;}' +
+    '#companyOverview,#learnerHistory,#companyMatrix{margin-top:14px;}' +
     'hr{border:none;border-top:1px solid var(--sf-border);margin:22px 0;}' +
+    '.matrix-wrap{overflow-x:auto;border:1px solid var(--sf-border);border-radius:8px;}' +
+    'table.matrix{border-collapse:collapse;width:100%;}' +
+    '.matrix th,.matrix td{border:1px solid var(--sf-border);padding:10px 12px;font-size:12.5px;' +
+    'vertical-align:top;white-space:pre-wrap;min-width:200px;}' +
+    '.matrix thead th{background:var(--sf-navy);color:#fff;font-weight:600;white-space:nowrap;}' +
+    '.matrix tbody th{background:#fff;color:var(--sf-navy);font-weight:700;text-align:center;' +
+    'white-space:nowrap;min-width:auto;}' +
+    '.matrix thead th:first-child,.matrix tbody th{position:sticky;left:0;}' +
+    '.matrix tbody tr:nth-child(even) td,.matrix tbody tr:nth-child(even) th{background:#faf9f8;}' +
     '</style></head><body>' +
 
     '<div class="sf-header"><span class="sf-dot"></span>学習進捗ログ</div>' +
-    '<div class="sf-container"><div class="sf-card">' +
+    '<div class="sf-container" id="sfContainer"><div class="sf-card">' +
 
     '<div class="tabs">' +
     '<button type="button" class="tabbtn active" id="tabbtn-write" onclick="showTab(\'write\')">記録を追加</button>' +
@@ -437,10 +496,13 @@ function buildWebAppHtml_() {
     '<div id="viewTab" style="display:none">' +
     '<h2>進捗を確認</h2>' +
     '<p class="hint">企業を選ぶと、その企業の全受講者について直近の記録を一覧できます。' +
-    '受講者を選んで「全記録を見る」を押すと、その人の全期間の記録を新しい順に確認できます。</p>' +
+    '受講者を選んで「全記録を見る」を押すと、その人の全期間の記録を新しい順に確認できます。' +
+    '「表でまとめて見る」では、回数を縦・受講者を横並びにした一覧表で見られます(PC画面向け)。</p>' +
     '<div class="field"><label>企業(シート)</label><select id="viewSheet" onchange="onViewSheetChange()"></select></div>' +
     '<button onclick="loadCompanyOverview()">この企業の最新状況を一覧</button>' +
+    '<button onclick="loadCompanyMatrix()">表でまとめて見る(PC向け)</button>' +
     '<div id="companyOverview"></div>' +
+    '<div id="companyMatrix"></div>' +
     '<hr>' +
     '<div class="field"><label>受講者</label><select id="viewLearner"></select></div>' +
     '<button onclick="loadLearnerHistory()">この受講者の全記録を見る</button>' +
@@ -467,7 +529,8 @@ function buildWebAppHtml_() {
     'document.getElementById("writeTab").style.display=(name==="write")?"":"none";' +
     'document.getElementById("viewTab").style.display=(name==="view")?"":"none";' +
     'document.getElementById("tabbtn-write").classList.toggle("active",name==="write");' +
-    'document.getElementById("tabbtn-view").classList.toggle("active",name==="view");}' +
+    'document.getElementById("tabbtn-view").classList.toggle("active",name==="view");' +
+    'document.getElementById("sfContainer").classList.toggle("wide",name==="view");}' +
 
     'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
     'const opts=structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");' +
@@ -550,6 +613,27 @@ function buildWebAppHtml_() {
     'const btn=document.createElement("button");btn.textContent="全履歴を見る";' +
     'btn.addEventListener("click",function(){selectLearnerAndLoad(item.learner);});' +
     'card.appendChild(btn);el.appendChild(card);});}' +
+
+    'function loadCompanyMatrix(){' +
+    'const sheetName=document.getElementById("viewSheet").value;' +
+    'const el=document.getElementById("companyMatrix");el.textContent="読み込み中...";' +
+    'google.script.run.withSuccessHandler(renderCompanyMatrix)' +
+    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
+    '.getCompanyMatrix(sheetName);}' +
+
+    'function renderCompanyMatrix(data){' +
+    'const el=document.getElementById("companyMatrix");el.innerHTML="";' +
+    'if(!data.learners||data.learners.length===0){el.textContent="受講者が見つかりません。";return;}' +
+    'if(data.rows.length===0){el.textContent="まだ記録がありません。";return;}' +
+    'let html="<div class=\\"matrix-wrap\\"><table class=\\"matrix\\"><thead><tr><th>回数</th>";' +
+    'data.learners.forEach(function(l){html+="<th>"+esc(l)+"</th>";});' +
+    'html+="</tr></thead><tbody>";' +
+    'data.rows.forEach(function(row){' +
+    'html+="<tr><th>"+row.index+"回目</th>";' +
+    'row.cells.forEach(function(c){html+="<td>"+(c?esc(c):"")+"</td>";});' +
+    'html+="</tr>";});' +
+    'html+="</tbody></table></div>";' +
+    'el.innerHTML=html;}' +
 
     'function selectLearnerAndLoad(learner){' +
     'document.getElementById("viewLearner").value=learner;' +
