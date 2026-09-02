@@ -28,6 +28,10 @@
  * 使い方・導入手順は同じフォルダの DEPLOY.md を参照。
  */
 
+// 集団相談用のグループ定義を保存する管理シートの名前。
+// 企業(受講者)一覧には絶対に含めないこと(listStructure_側でも除外している)。
+var GROUP_SHEET_NAME = 'グループ設定';
+
 // ===== メニュー =====
 
 function onOpen() {
@@ -61,6 +65,7 @@ function listStructure_(ss) {
   var out = [];
   for (var i = 0; i < sheets.length; i++) {
     var sh = sheets[i];
+    if (sh.getName() === GROUP_SHEET_NAME) continue; // グループ設定用の管理シートは除外
     var lastCol = sh.getLastColumn();
     if (lastCol < 2) continue; // B列以降がないシートは対象外
     var headers = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
@@ -75,6 +80,43 @@ function listStructure_(ss) {
     }
   }
   return out;
+}
+
+// ===== 企業・受講者の登録 =====
+
+// Webアプリ側のJavaScriptから呼ばれる。新しい企業(シート)を作成する。
+// 作成直後は受講者が0人のため、listStructure_の一覧にはまだ出てこない
+// (呼び出し側で構造をローカルに補って表示する)。
+function createCompany(companyName) {
+  companyName = String(companyName || '').trim();
+  if (!companyName) throw new Error('企業名を入力してください。');
+  if (companyName === GROUP_SHEET_NAME) {
+    throw new Error('この名前は管理用に予約されているため使用できません: ' + companyName);
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getSheetByName(companyName)) {
+    throw new Error('同名のシートが既に存在します: ' + companyName);
+  }
+  ss.insertSheet(companyName);
+  return { sheetName: companyName };
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)を追加する。
+function createLearner(sheetName, learnerName) {
+  learnerName = String(learnerName || '').trim();
+  if (!learnerName) throw new Error('受講者名を入力してください。');
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('シートが見つかりません: ' + sheetName);
+  if (findLearnerColumn_(sh, learnerName) !== -1) {
+    throw new Error('同名の受講者が既に登録されています: ' + learnerName);
+  }
+  var lastCol = sh.getLastColumn();
+  var targetCol = lastCol < 2 ? 2 : lastCol + 1; // A列は使わない想定なので最低でもB列から
+  var cell = sh.getRange(1, targetCol);
+  cell.setValue(learnerName);
+  cell.setFontWeight('bold');
+  return listStructure_(ss);
 }
 
 // ===== 書き込み =====
@@ -249,6 +291,93 @@ function getCompanyMatrix_(ss, sheetName) {
   return { learners: learners, rows: rows };
 }
 
+// ===== グループ管理(集団相談用) =====
+//
+// 「グループ設定」という管理シートに、1グループ1行ではなく1メンバー1行の形式で保存する。
+// 例:
+//   グループ名          | 企業(シート)         | 受講者
+//   合同研修グループA    | サンプル商事株式会社  | 鈴木花子
+//   合同研修グループA    | テスト工業株式会社    | 佐藤次郎
+// 同じグループ名の行をまとめると、そのグループのメンバー一覧になる。
+
+function getGroupSheet_(ss, createIfMissing) {
+  var sh = ss.getSheetByName(GROUP_SHEET_NAME);
+  if (!sh && createIfMissing) {
+    sh = ss.insertSheet(GROUP_SHEET_NAME);
+    sh.getRange(1, 1, 1, 3).setValues([['グループ名', '企業(シート)', '受講者']]);
+    sh.getRange(1, 1, 1, 3).setFontWeight('bold');
+  }
+  return sh;
+}
+
+function listGroups_(ss) {
+  var sh = getGroupSheet_(ss, false);
+  if (!sh) return [];
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return [];
+
+  var values = sh.getRange(2, 1, lastRow - 1, 3).getValues();
+  var order = [];
+  var map = {};
+  values.forEach(function (row) {
+    var name = String(row[0] || '').trim();
+    var sheetName = String(row[1] || '').trim();
+    var learner = String(row[2] || '').trim();
+    if (!name || !sheetName || !learner) return;
+    if (!map[name]) {
+      map[name] = [];
+      order.push(name);
+    }
+    map[name].push({ sheetName: sheetName, learner: learner });
+  });
+  return order.map(function (name) {
+    return { name: name, members: map[name] };
+  });
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。保存済みグループの一覧を返す。
+function getGroups() {
+  return listGroups_(SpreadsheetApp.getActiveSpreadsheet());
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。members: [{ sheetName, learner }, ...]
+// 同名のグループが既にあれば置き換える(削除してから追加し直す)。
+function saveGroup(name, members) {
+  name = String(name || '').trim();
+  if (!name) throw new Error('グループ名を入力してください。');
+  if (!members || members.length === 0) throw new Error('メンバーを1人以上指定してください。');
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = getGroupSheet_(ss, true);
+  deleteGroupRows_(sh, name);
+
+  var rows = members.map(function (m) {
+    return [name, m.sheetName, m.learner];
+  });
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, 3).setValues(rows);
+  return listGroups_(ss);
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。指定した名前のグループを削除する。
+function deleteGroup(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = getGroupSheet_(ss, false);
+  if (sh) deleteGroupRows_(sh, name);
+  return listGroups_(ss);
+}
+
+function deleteGroupRows_(sh, name) {
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return;
+  var values = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+  // 行番号がズレないよう、後ろの行から削除する
+  for (var r = values.length - 1; r >= 0; r--) {
+    if (String(values[r][0] || '').trim() === name) {
+      sh.deleteRow(r + 2);
+    }
+  }
+}
+
 // ===== ダイアログのHTML =====
 
 function buildDialogHtml_() {
@@ -368,46 +497,45 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
 
 /**
  * Gemini APIを呼び出して要約テキストを取得する。
- * 事前に「プロジェクトの設定」→「スクリプト プロパティ」で GEMINI_API_KEY を設定しておくこと。
- * GEMINI_MODEL は省略可(未設定時は gemini-2.0-flash を使用)。
+ *
+ * 個人のGemini APIキーを直接使う方式(旧実装)は廃止した。社内のAI推進室が用意した
+ * GASライブラリ「GeminiRaytech」経由でVertex AIのGeminiを呼び出す(社内のGemini Gateway
+ * 移行方針に沿った、GAS向けの正式な接続方法)。認証は全てライブラリ側(サービスアカウント)
+ * が行うため、APIキーの発行・保管は一切不要。
+ *
+ * 導入手順(初回のみ)は gas/DEPLOY.md を参照:
+ *   1. Apps Scriptエディタの「ライブラリ」→スクリプトID
+ *      1SNn6G_ri9HwMu1jLLoA7ChZVVlS4Vk_LYwUNIWhvBvpYenikR1LrWKcW を追加(バージョン2)
+ *   2. AI推進室(AIチーム)に利用権限の付与を依頼
+ *   3. testGeminiRaytech_() をエディタから一度手動実行し、権限承認ポップアップで
+ *      全てのチェックボックスにチェックを入れて許可する(Webアプリ経由の初回実行では
+ *      承認ポップアップが出せないため、必ずエディタから先に一度実行しておくこと)
  */
 function callGemini_(prompt) {
-  var props = PropertiesService.getScriptProperties();
-  var apiKey = props.getProperty('GEMINI_API_KEY');
-  if (!apiKey) {
+  var model = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || undefined; // 未設定ならライブラリの既定(gemini-2.5-flash)
+  var text;
+  try {
+    text = GeminiRaytech.generateText(prompt, model);
+  } catch (err) {
     throw new Error(
-      'GEMINI_API_KEYが設定されていません。Apps Scriptエディタの' +
-      '「プロジェクトの設定」→「スクリプト プロパティ」で設定してください。'
+      'GeminiRaytech呼び出しエラー: ' + err + ' ' +
+      '(権限未承認、またはAI推進室への利用申請が未了の可能性があります。gas/DEPLOY.mdを確認してください)'
     );
   }
-  var model = props.getProperty('GEMINI_MODEL') || 'gemini-2.0-flash';
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey;
-
-  var resp = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-    muteHttpExceptions: true
-  });
-
-  var code = resp.getResponseCode();
-  var body;
-  try {
-    body = JSON.parse(resp.getContentText());
-  } catch (e) {
-    throw new Error('Gemini APIの応答を解析できませんでした: ' + resp.getContentText());
-  }
-  if (code !== 200) {
-    var msg = body && body.error && body.error.message ? body.error.message : resp.getContentText();
-    throw new Error('Gemini APIエラー(' + code + '): ' + msg);
-  }
-  var candidate = body.candidates && body.candidates[0];
-  var text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
   if (!text) {
-    var reason = candidate && candidate.finishReason ? candidate.finishReason : '不明';
-    throw new Error('Gemini APIから要約テキストを取得できませんでした(finishReason: ' + reason + ')');
+    throw new Error('GeminiRaytechから要約テキストを取得できませんでした。');
   }
-  return text.trim();
+  return String(text).trim();
+}
+
+/**
+ * GeminiRaytech利用の初回権限承認用。Apps Scriptエディタから手動で一度実行し、
+ * 表示される権限確認ポップアップで全てのチェックボックスにチェックを入れて許可すること。
+ * (詳細は gas/DEPLOY.md 「初回実行時の注意点」を参照)
+ */
+function testGeminiRaytech_() {
+  var text = GeminiRaytech.generateText('こんにちは');
+  Logger.log(text);
 }
 
 function buildWebAppHtml_() {
@@ -475,6 +603,7 @@ function buildWebAppHtml_() {
     '<div class="tabs">' +
     '<button type="button" class="tabbtn active" id="tabbtn-write" onclick="showTab(\'write\')">記録を追加</button>' +
     '<button type="button" class="tabbtn" id="tabbtn-view" onclick="showTab(\'view\')">進捗を確認</button>' +
+    '<button type="button" class="tabbtn" id="tabbtn-manage" onclick="showTab(\'manage\')">登録・管理</button>' +
     '</div>' +
 
     '<div id="writeTab">' +
@@ -509,13 +638,47 @@ function buildWebAppHtml_() {
     '<div id="learnerHistory"></div>' +
     '</div>' +
 
+    '<div id="manageTab" style="display:none">' +
+    '<h2>企業・受講者の登録</h2>' +
+    '<p class="hint">新しい企業(シート)や受講者を追加できます。企業を登録した直後は受講者が0人なので、' +
+    'このあと続けて受講者を最低1人登録してください(受講者が0人の間は他の画面のプルダウンにまだ出てきません)。</p>' +
+
+    '<div class="field"><label>新しい企業名</label><input type="text" id="newCompanyName" placeholder="例: サンプル商事株式会社"></div>' +
+    '<button class="primary" onclick="createCompanyClick()">企業を登録</button>' +
+    '<div id="companyCreateStatus" class="hint"></div>' +
+
+    '<hr>' +
+
+    '<div class="field"><label>企業(シート)</label><select id="learnerCompanySelect"></select></div>' +
+    '<div class="field"><label>新しい受講者名</label><input type="text" id="newLearnerName" placeholder="例: 山田太郎"></div>' +
+    '<button class="primary" onclick="createLearnerClick()">受講者を登録</button>' +
+    '<div id="learnerCreateStatus" class="hint"></div>' +
+
+    '<hr>' +
+
+    '<h2>グループ管理(集団相談用)</h2>' +
+    '<p class="hint">よく行う集団相談の組み合わせを「グループ」として保存しておくと、' +
+    '「記録を追加」タブで対象者欄をまとめて呼び出せます(複数企業にまたがってもよい)。</p>' +
+    '<div id="groupList"></div>' +
+    '<div id="groupRows"></div>' +
+    '<button onclick="addGroupRow()">+ メンバーを追加</button>' +
+    '<br>' +
+    '<div class="field"><label>グループ名</label><input type="text" id="newGroupName" placeholder="例: サンプル商事+テスト工業 合同研修"></div>' +
+    '<button class="primary" onclick="saveGroupClick()">このメンバーでグループを保存</button>' +
+    '<div id="groupSaveStatus" class="hint"></div>' +
+    '</div>' +
+
     '</div></div>' +
 
     '<script>' +
-    'let structure=[];let rowCount=0;let vttText="";' +
-    'google.script.run.withSuccessHandler(function(data){structure=data;addRow();populateViewSheet();})' +
+    'let structure=[];let rowCount=0;let groupRowCount=0;let vttText="";' +
+    'google.script.run.withSuccessHandler(function(data){' +
+    'structure=data;addRow();populateViewSheet();populateLearnerCompanySelect();addGroupRow();})' +
     '.withFailureHandler(function(err){setStatus("読み込みエラー: "+err.message);})' +
     '.getStructureForDialog();' +
+    'google.script.run.withSuccessHandler(renderGroupList)' +
+    '.withFailureHandler(function(err){document.getElementById("groupList").textContent="読み込みエラー: "+err.message;})' +
+    '.getGroups();' +
 
     'document.getElementById("vttFile").addEventListener("change",function(ev){' +
     'const f=ev.target.files[0];if(!f)return;' +
@@ -525,25 +688,28 @@ function buildWebAppHtml_() {
 
     'function esc(s){return String(s).replace(/[&<>"\']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c];});}' +
 
+    'function sheetOptionsHtml(){return structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");}' +
+    'function learnerOptionsHtml(sheetName){const sheet=structure.find(function(s){return s.sheetName===sheetName;});' +
+    'return (sheet?sheet.learners:[]).map(function(l){return "<option value=\\""+esc(l.learner)+"\\">"+esc(l.learner)+"</option>";}).join("");}' +
+
     'function showTab(name){' +
     'document.getElementById("writeTab").style.display=(name==="write")?"":"none";' +
     'document.getElementById("viewTab").style.display=(name==="view")?"":"none";' +
+    'document.getElementById("manageTab").style.display=(name==="manage")?"":"none";' +
     'document.getElementById("tabbtn-write").classList.toggle("active",name==="write");' +
     'document.getElementById("tabbtn-view").classList.toggle("active",name==="view");' +
+    'document.getElementById("tabbtn-manage").classList.toggle("active",name==="manage");' +
     'document.getElementById("sfContainer").classList.toggle("wide",name==="view");}' +
 
     'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
-    'const opts=structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");' +
     'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeRow("+id+")\\">✕ 削除</span>"+' +
-    '"<label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+opts+"</select>"+' +
+    '"<label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select>"+' +
     '"<label>受講者</label><select id=\\"learner-"+id+"\\"></select>"+' +
     '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>";' +
     'document.getElementById("rows").appendChild(div);updateLearners(id);}' +
 
-    'function updateLearners(id){const sheetName=document.getElementById("sheet-"+id).value;' +
-    'const sheet=structure.find(function(s){return s.sheetName===sheetName;});' +
-    'const sel=document.getElementById("learner-"+id);' +
-    'sel.innerHTML=(sheet?sheet.learners:[]).map(function(l){return "<option value=\\""+esc(l.learner)+"\\">"+esc(l.learner)+"</option>";}).join("");}' +
+    'function updateLearners(id){' +
+    'document.getElementById("learner-"+id).innerHTML=learnerOptionsHtml(document.getElementById("sheet-"+id).value);}' +
 
     'function removeRow(id){const el=document.getElementById("row-"+id);if(el)el.remove();}' +
 
@@ -553,7 +719,7 @@ function buildWebAppHtml_() {
     'if(!vttText){setStatus("先にVTTファイルを選択してください。");return;}' +
     'const date=document.getElementById("sessionDate").value;' +
     'if(!date){setStatus("実施日を入力してください。");return;}' +
-    'const rows=document.querySelectorAll(".row");' +
+    'const rows=document.querySelectorAll("#rows .row");' +
     'if(rows.length===0){setStatus("対象者を1人以上選択してください。");return;}' +
     'const isGroup=rows.length>1;' +
     'const participants=[];' +
@@ -568,7 +734,7 @@ function buildWebAppHtml_() {
     '}).withFailureHandler(function(err){setStatus("要約エラー: "+err.message);})' +
     '.generateSummary({vttText:vttText,date:date,isGroup:isGroup,participants:participants});}' +
 
-    'function submitAll(){const rows=document.querySelectorAll(".row");const entries=[];' +
+    'function submitAll(){const rows=document.querySelectorAll("#rows .row");const entries=[];' +
     'rows.forEach(function(row){const id=row.id.split("-")[1];' +
     'const sheetName=document.getElementById("sheet-"+id).value;' +
     'const learner=document.getElementById("learner-"+id).value;' +
@@ -584,15 +750,11 @@ function buildWebAppHtml_() {
     '.submitEntries(entries);}' +
 
     'function populateViewSheet(){' +
-    'const sel=document.getElementById("viewSheet");' +
-    'sel.innerHTML=structure.map(function(s){return "<option value=\\""+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("");' +
+    'document.getElementById("viewSheet").innerHTML=sheetOptionsHtml();' +
     'onViewSheetChange();}' +
 
     'function onViewSheetChange(){' +
-    'const sheetName=document.getElementById("viewSheet").value;' +
-    'const sheet=structure.find(function(s){return s.sheetName===sheetName;});' +
-    'const sel=document.getElementById("viewLearner");' +
-    'sel.innerHTML=(sheet?sheet.learners:[]).map(function(l){return "<option value=\\""+esc(l.learner)+"\\">"+esc(l.learner)+"</option>";}).join("");}' +
+    'document.getElementById("viewLearner").innerHTML=learnerOptionsHtml(document.getElementById("viewSheet").value);}' +
 
     'function loadCompanyOverview(){' +
     'const sheetName=document.getElementById("viewSheet").value;' +
@@ -655,5 +817,92 @@ function buildWebAppHtml_() {
     'card.innerHTML=(r.date?"<span class=\\"badge\\">"+esc(r.date)+"</span>":"")' +
     '+"<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
     'el.appendChild(card);});}' +
+
+    'function populateLearnerCompanySelect(){' +
+    'document.getElementById("learnerCompanySelect").innerHTML=sheetOptionsHtml();}' +
+
+    'function createCompanyClick(){' +
+    'const input=document.getElementById("newCompanyName");const name=input.value.trim();' +
+    'const statusEl=document.getElementById("companyCreateStatus");' +
+    'if(!name){statusEl.textContent="企業名を入力してください。";return;}' +
+    'statusEl.textContent="登録中...";' +
+    'google.script.run.withSuccessHandler(function(){' +
+    'structure.push({sheetName:name,learners:[]});' +
+    'populateViewSheet();populateLearnerCompanySelect();' +
+    'input.value="";' +
+    'statusEl.textContent="✅ 登録しました: "+name+"(続けて受講者を登録してください)";' +
+    '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
+    '.createCompany(name);}' +
+
+    'function createLearnerClick(){' +
+    'const sheetName=document.getElementById("learnerCompanySelect").value;' +
+    'const input=document.getElementById("newLearnerName");const name=input.value.trim();' +
+    'const statusEl=document.getElementById("learnerCreateStatus");' +
+    'if(!name){statusEl.textContent="受講者名を入力してください。";return;}' +
+    'statusEl.textContent="登録中...";' +
+    'google.script.run.withSuccessHandler(function(data){' +
+    'structure=data;populateViewSheet();populateLearnerCompanySelect();' +
+    'input.value="";' +
+    'statusEl.textContent="✅ 登録しました: "+sheetName+" / "+name;' +
+    '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
+    '.createLearner(sheetName,name);}' +
+
+    'function addGroupRow(){groupRowCount++;const id=groupRowCount;const div=document.createElement("div");div.className="row";div.id="grouprow-"+id;' +
+    'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeGroupRow("+id+")\\">✕ 削除</span>"+' +
+    '"<label>企業(シート)</label><select onchange=\\"updateGroupLearners("+id+")\\" id=\\"gsheet-"+id+"\\">"+sheetOptionsHtml()+"</select>"+' +
+    '"<label>受講者</label><select id=\\"glearner-"+id+"\\"></select>";' +
+    'document.getElementById("groupRows").appendChild(div);updateGroupLearners(id);}' +
+
+    'function updateGroupLearners(id){' +
+    'document.getElementById("glearner-"+id).innerHTML=learnerOptionsHtml(document.getElementById("gsheet-"+id).value);}' +
+
+    'function removeGroupRow(id){const el=document.getElementById("grouprow-"+id);if(el)el.remove();}' +
+
+    'function saveGroupClick(){' +
+    'const name=document.getElementById("newGroupName").value.trim();' +
+    'const rows=document.querySelectorAll("#groupRows .row");const members=[];' +
+    'rows.forEach(function(row){const id=row.id.split("-")[1];' +
+    'members.push({sheetName:document.getElementById("gsheet-"+id).value,learner:document.getElementById("glearner-"+id).value});});' +
+    'const statusEl=document.getElementById("groupSaveStatus");' +
+    'if(!name){statusEl.textContent="グループ名を入力してください。";return;}' +
+    'if(members.length===0){statusEl.textContent="メンバーを1人以上追加してください。";return;}' +
+    'statusEl.textContent="保存中...";' +
+    'google.script.run.withSuccessHandler(function(groups){' +
+    'renderGroupList(groups);' +
+    'document.getElementById("newGroupName").value="";' +
+    'document.getElementById("groupRows").innerHTML="";groupRowCount=0;addGroupRow();' +
+    'statusEl.textContent="✅ 保存しました: "+name;' +
+    '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
+    '.saveGroup(name,members);}' +
+
+    'function renderGroupList(groups){' +
+    'const el=document.getElementById("groupList");el.innerHTML="";' +
+    'if(!groups||groups.length===0){el.textContent="保存されているグループはまだありません。";return;}' +
+    'groups.forEach(function(g){' +
+    'const card=document.createElement("div");card.className="card";' +
+    'const memberText=g.members.map(function(m){return esc(m.sheetName)+":"+esc(m.learner);}).join("、");' +
+    'card.innerHTML="<b>"+esc(g.name)+"</b><div class=\\"cardtext\\">"+memberText+"</div>";' +
+    'const useBtn=document.createElement("button");useBtn.className="primary";useBtn.textContent="記録追加に使う";' +
+    'useBtn.addEventListener("click",function(){applyGroupToWriteTab(g);});' +
+    'const delBtn=document.createElement("button");delBtn.textContent="削除";' +
+    'delBtn.addEventListener("click",function(){deleteGroupClick(g.name);});' +
+    'card.appendChild(useBtn);card.appendChild(delBtn);el.appendChild(card);});}' +
+
+    'function deleteGroupClick(name){' +
+    'google.script.run.withSuccessHandler(renderGroupList)' +
+    '.withFailureHandler(function(err){document.getElementById("groupList").textContent="エラー: "+err.message;})' +
+    '.deleteGroup(name);}' +
+
+    'function applyGroupToWriteTab(g){' +
+    'showTab("write");' +
+    'document.getElementById("rows").innerHTML="";' +
+    'g.members.forEach(function(m){' +
+    'addRow();' +
+    'const all=document.querySelectorAll("#rows .row");const row=all[all.length-1];' +
+    'const id=row.id.split("-")[1];' +
+    'document.getElementById("sheet-"+id).value=m.sheetName;' +
+    'updateLearners(id);' +
+    'document.getElementById("learner-"+id).value=m.learner;});' +
+    'setStatus("グループ「"+g.name+"」のメンバーを対象者欄に反映しました。VTTを選ぶか、直接記録内容を入力してください。");}' +
     '</script></body></html>';
 }
