@@ -378,6 +378,35 @@ function deleteGroupRows_(sh, name) {
   }
 }
 
+// Webアプリ側のJavaScriptから呼ばれる。指定グループの全メンバー(企業をまたいでもよい)について、
+// 直近の記録・記録件数を返す(進捗確認タブの「グループで見る」用)。
+function getGroupOverview(groupName) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var group = listGroups_(ss).filter(function (g) { return g.name === groupName; })[0];
+  if (!group) throw new Error('グループが見つかりません: ' + groupName);
+
+  return group.members.map(function (m) {
+    var sh = ss.getSheetByName(m.sheetName);
+    if (!sh) {
+      return { sheetName: m.sheetName, learner: m.learner, recordCount: 0, lastDate: '', lastText: '', error: 'シートが見つかりません' };
+    }
+    var col = findLearnerColumn_(sh, m.learner);
+    if (col === -1) {
+      return { sheetName: m.sheetName, learner: m.learner, recordCount: 0, lastDate: '', lastText: '', error: '受講者列が見つかりません' };
+    }
+    var lastRow = getLastUsedRow_(sh, col);
+    var recordCount = Math.max(0, lastRow - 1);
+    var lastText = recordCount > 0 ? String(sh.getRange(lastRow, col).getValue()) : '';
+    return {
+      sheetName: m.sheetName,
+      learner: m.learner,
+      recordCount: recordCount,
+      lastDate: extractDate_(lastText),
+      lastText: lastText
+    };
+  });
+}
+
 // ===== ダイアログのHTML =====
 
 function buildDialogHtml_() {
@@ -546,50 +575,51 @@ function buildWebAppHtml_() {
     '--sf-muted:#706e6b;--sf-border:#dddbda;--sf-bg:#f3f2f2;--sf-danger:#ba0517;--sf-input-border:#c9c7c5;}' +
     '*{box-sizing:border-box;}' +
     'body{margin:0;background:var(--sf-bg);color:var(--sf-text);' +
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;font-size:14px;}' +
-    '.sf-header{background:var(--sf-navy);color:#fff;padding:14px 20px;font-size:16px;font-weight:700;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;font-size:15px;}' +
+    '.sf-header{background:var(--sf-navy);color:#fff;padding:16px 24px;font-size:17px;font-weight:700;' +
     'display:flex;align-items:center;gap:8px;}' +
     '.sf-dot{width:9px;height:9px;border-radius:50%;background:var(--sf-blue);display:inline-block;flex:none;}' +
-    '.sf-container{max-width:680px;margin:20px auto;padding:0 16px 40px;transition:max-width .15s;}' +
-    '.sf-container.wide{max-width:1200px;}' +
+    '.sf-container{max-width:860px;margin:24px auto;padding:0 20px 48px;transition:max-width .15s;}' +
+    '.sf-container.wide{max-width:1360px;}' +
     '.sf-card{background:#fff;border:1px solid var(--sf-border);border-radius:8px;' +
-    'box-shadow:0 1px 3px rgba(0,0,0,.08);padding:20px 20px 24px;}' +
-    'h2{margin:0 0 4px;font-size:17px;font-weight:700;color:var(--sf-navy);}' +
-    '.hint{font-size:12.5px;color:var(--sf-muted);line-height:1.5;margin:0 0 18px;}' +
-    '.field{margin-bottom:16px;}' +
-    'label{display:block;font-weight:600;font-size:13px;color:var(--sf-text);margin-bottom:5px;}' +
-    'input[type=file],input[type=date],select,textarea{width:100%;font-family:inherit;font-size:14px;' +
-    'color:var(--sf-text);border:1px solid var(--sf-input-border);border-radius:4px;padding:8px 10px;background:#fff;}' +
+    'box-shadow:0 1px 3px rgba(0,0,0,.08);padding:28px 32px 32px;}' +
+    'h2{margin:0 0 4px;font-size:19px;font-weight:700;color:var(--sf-navy);}' +
+    'h3{margin:0 0 4px;font-size:15.5px;font-weight:700;color:var(--sf-navy);}' +
+    '.hint{font-size:13px;color:var(--sf-muted);line-height:1.6;margin:0 0 18px;}' +
+    '.field{margin-bottom:18px;}' +
+    'label{display:block;font-weight:600;font-size:13.5px;color:var(--sf-text);margin-bottom:6px;}' +
+    'input[type=file],input[type=date],input[type=text],select,textarea{width:100%;font-family:inherit;font-size:15px;' +
+    'color:var(--sf-text);border:1px solid var(--sf-input-border);border-radius:4px;padding:9px 12px;background:#fff;}' +
     'input[type=file]{padding:6px;}' +
     'select:focus,input:focus,textarea:focus{outline:none;border-color:var(--sf-blue);box-shadow:0 0 0 1px var(--sf-blue);}' +
-    '.row{border:1px solid var(--sf-border);background:#fafaf9;border-radius:8px;padding:14px;margin-bottom:14px;position:relative;}' +
-    '.row textarea{height:150px;margin-top:0;}' +
-    '.remove{position:absolute;top:12px;right:14px;color:var(--sf-danger);cursor:pointer;font-size:12px;font-weight:600;}' +
+    '.row{border:1px solid var(--sf-border);background:#fafaf9;border-radius:8px;padding:16px;margin-bottom:16px;position:relative;}' +
+    '.row textarea{height:160px;margin-top:0;}' +
+    '.remove{position:absolute;top:14px;right:16px;color:var(--sf-danger);cursor:pointer;font-size:12.5px;font-weight:600;}' +
     '.remove:hover{text-decoration:underline;}' +
-    'button{font-family:inherit;padding:8px 16px;margin:0 8px 8px 0;border-radius:4px;' +
-    'border:1px solid var(--sf-input-border);background:#fff;color:var(--sf-blue);font-size:13px;font-weight:600;cursor:pointer;}' +
+    'button{font-family:inherit;padding:9px 18px;margin:0 8px 8px 0;border-radius:4px;' +
+    'border:1px solid var(--sf-input-border);background:#fff;color:var(--sf-blue);font-size:13.5px;font-weight:600;cursor:pointer;}' +
     'button:hover{background:var(--sf-bg);}' +
     '.primary{background:var(--sf-blue);border-color:var(--sf-blue);color:#fff;}' +
     '.primary:hover{background:var(--sf-blue-dark);border-color:var(--sf-blue-dark);}' +
-    '#status{margin-top:16px;white-space:pre-wrap;font-size:13px;color:var(--sf-text);}' +
-    '.tabs{display:flex;gap:4px;border-bottom:1px solid var(--sf-border);margin-bottom:20px;}' +
+    '#status{margin-top:16px;white-space:pre-wrap;font-size:13.5px;color:var(--sf-text);}' +
+    '.tabs{display:flex;gap:4px;border-bottom:1px solid var(--sf-border);margin-bottom:24px;}' +
     '.tabbtn{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;' +
-    'padding:10px 14px;margin:0;font-size:14px;font-weight:600;color:var(--sf-muted);cursor:pointer;}' +
+    'padding:11px 16px;margin:0;font-size:14.5px;font-weight:600;color:var(--sf-muted);cursor:pointer;}' +
     '.tabbtn:hover{color:var(--sf-blue);background:none;}' +
     '.tabbtn.active{border-bottom-color:var(--sf-blue);color:var(--sf-blue);}' +
-    '.card{border:1px solid var(--sf-border);border-radius:8px;padding:14px;margin-bottom:10px;background:#fff;}' +
-    '.card b{color:var(--sf-navy);font-size:14px;}' +
+    '.card{border:1px solid var(--sf-border);border-radius:8px;padding:16px;margin-bottom:12px;background:#fff;}' +
+    '.card b{color:var(--sf-navy);font-size:14.5px;}' +
     '.badge{display:inline-block;background:#eaf5fe;color:var(--sf-blue-dark);border-radius:10px;' +
-    'padding:2px 10px;font-size:11.5px;font-weight:600;margin-left:6px;}' +
+    'padding:3px 11px;font-size:12px;font-weight:600;margin-left:6px;}' +
     '.badge-muted{background:var(--sf-bg);color:var(--sf-muted);}' +
-    '.cardtext{white-space:pre-wrap;margin-top:8px;font-size:13px;color:var(--sf-text);line-height:1.55;' +
-    'background:#faf9f8;border:1px solid #f0efed;border-radius:6px;padding:10px;}' +
-    '#companyOverview,#learnerHistory,#companyMatrix{margin-top:14px;}' +
-    'hr{border:none;border-top:1px solid var(--sf-border);margin:22px 0;}' +
+    '.cardtext{white-space:pre-wrap;margin-top:10px;font-size:13.5px;color:var(--sf-text);line-height:1.6;' +
+    'background:#faf9f8;border:1px solid #f0efed;border-radius:6px;padding:12px;}' +
+    '#companyOverview,#learnerHistory,#companyMatrix,#groupOverview{margin-top:14px;}' +
+    'hr{border:none;border-top:1px solid var(--sf-border);margin:26px 0;}' +
     '.matrix-wrap{overflow-x:auto;border:1px solid var(--sf-border);border-radius:8px;}' +
     'table.matrix{border-collapse:collapse;width:100%;}' +
-    '.matrix th,.matrix td{border:1px solid var(--sf-border);padding:10px 12px;font-size:12.5px;' +
-    'vertical-align:top;white-space:pre-wrap;min-width:200px;}' +
+    '.matrix th,.matrix td{border:1px solid var(--sf-border);padding:11px 14px;font-size:13px;' +
+    'vertical-align:top;white-space:pre-wrap;min-width:220px;}' +
     '.matrix thead th{background:var(--sf-navy);color:#fff;font-weight:600;white-space:nowrap;}' +
     '.matrix tbody th{background:#fff;color:var(--sf-navy);font-weight:700;text-align:center;' +
     'white-space:nowrap;min-width:auto;}' +
@@ -610,6 +640,11 @@ function buildWebAppHtml_() {
     '<h2>VTTから自動作成</h2>' +
     '<p class="hint">Zoomの文字起こし(.vtt)をアップロードして「AIで要約を作成」を押すと、下の記録内容欄に' +
     '下書きが自動で入ります。内容を確認・必要なら修正してから「この内容で書き込む」を押してください。</p>' +
+
+    '<div class="field"><label>グループから対象者を読み込む(任意・集団相談の場合)</label>' +
+    '<select id="groupSelect"></select></div>' +
+    '<button onclick="loadGroupIntoWriteTab()">このグループを対象者欄に読み込む</button>' +
+    '<hr>' +
 
     '<div class="field"><label>VTTファイル</label><input type="file" id="vttFile" accept=".vtt"></div>' +
     '<div class="field"><label>実施日</label><input type="date" id="sessionDate"></div>' +
@@ -636,6 +671,13 @@ function buildWebAppHtml_() {
     '<div class="field"><label>受講者</label><select id="viewLearner"></select></div>' +
     '<button onclick="loadLearnerHistory()">この受講者の全記録を見る</button>' +
     '<div id="learnerHistory"></div>' +
+
+    '<hr>' +
+    '<h3>グループで見る</h3>' +
+    '<p class="hint">集団相談のグループ単位で、メンバー全員(企業をまたいでもよい)の直近の記録をまとめて確認できます。</p>' +
+    '<div class="field"><label>グループ</label><select id="viewGroupSelect"></select></div>' +
+    '<button onclick="loadGroupOverview()">このグループの状況を一覧</button>' +
+    '<div id="groupOverview"></div>' +
     '</div>' +
 
     '<div id="manageTab" style="display:none">' +
@@ -671,7 +713,7 @@ function buildWebAppHtml_() {
     '</div></div>' +
 
     '<script>' +
-    'let structure=[];let rowCount=0;let groupRowCount=0;let vttText="";' +
+    'let structure=[];let rowCount=0;let groupRowCount=0;let vttText="";let groupsCache=[];' +
     'google.script.run.withSuccessHandler(function(data){' +
     'structure=data;addRow();populateViewSheet();populateLearnerCompanySelect();addGroupRow();})' +
     '.withFailureHandler(function(err){setStatus("読み込みエラー: "+err.message);})' +
@@ -876,6 +918,7 @@ function buildWebAppHtml_() {
     '.saveGroup(name,members);}' +
 
     'function renderGroupList(groups){' +
+    'groupsCache=groups||[];populateGroupSelects();' +
     'const el=document.getElementById("groupList");el.innerHTML="";' +
     'if(!groups||groups.length===0){el.textContent="保存されているグループはまだありません。";return;}' +
     'groups.forEach(function(g){' +
@@ -904,5 +947,43 @@ function buildWebAppHtml_() {
     'updateLearners(id);' +
     'document.getElementById("learner-"+id).value=m.learner;});' +
     'setStatus("グループ「"+g.name+"」のメンバーを対象者欄に反映しました。VTTを選ぶか、直接記録内容を入力してください。");}' +
+
+    'function populateGroupSelects(){' +
+    'const opts="<option value=\\"\\">(グループを選択)</option>"+groupsCache.map(function(g){' +
+    'return "<option value=\\""+esc(g.name)+"\\">"+esc(g.name)+"</option>";}).join("");' +
+    'const writeSel=document.getElementById("groupSelect");if(writeSel)writeSel.innerHTML=opts;' +
+    'const viewSel=document.getElementById("viewGroupSelect");if(viewSel)viewSel.innerHTML=opts;}' +
+
+    'function loadGroupIntoWriteTab(){' +
+    'const name=document.getElementById("groupSelect").value;' +
+    'if(!name){setStatus("グループを選択してください。");return;}' +
+    'const g=groupsCache.find(function(x){return x.name===name;});' +
+    'if(!g){setStatus("グループが見つかりません: "+name);return;}' +
+    'applyGroupToWriteTab(g);}' +
+
+    'function loadGroupOverview(){' +
+    'const name=document.getElementById("viewGroupSelect").value;' +
+    'const el=document.getElementById("groupOverview");' +
+    'if(!name){el.textContent="グループを選択してください。";return;}' +
+    'el.textContent="読み込み中...";' +
+    'google.script.run.withSuccessHandler(renderGroupOverview)' +
+    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
+    '.getGroupOverview(name);}' +
+
+    'function renderGroupOverview(list){' +
+    'const el=document.getElementById("groupOverview");el.innerHTML="";' +
+    'if(!list||list.length===0){el.textContent="メンバーが見つかりません。";return;}' +
+    'list.forEach(function(item){' +
+    'const card=document.createElement("div");card.className="card";' +
+    'const header="<b>"+esc(item.sheetName)+" / "+esc(item.learner)+"</b>";' +
+    'if(item.error){' +
+    'card.innerHTML=header+"<span class=\\"badge badge-muted\\">"+esc(item.error)+"</span>";' +
+    '}else{' +
+    'card.innerHTML=header' +
+    '+"<span class=\\"badge\\">記録"+item.recordCount+"件</span>"' +
+    '+(item.lastDate?"<span class=\\"badge badge-muted\\">直近 "+esc(item.lastDate)+"</span>":"")' +
+    '+"<div class=\\"cardtext\\">"+esc(item.lastText||"(記録なし)")+"</div>";' +
+    '}' +
+    'el.appendChild(card);});}' +
     '</script></body></html>';
 }
