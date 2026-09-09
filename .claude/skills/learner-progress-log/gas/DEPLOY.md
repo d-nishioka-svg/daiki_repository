@@ -67,6 +67,26 @@ Webアプリ経由の初回実行では権限承認のポップアップを出�
 401/403エラーが出る場合は、権限付与(手順3-1の1)が済んでいるか、appsscript.jsonの
 `oauthScopes`を独自に上書きしていないかを確認する(詳細は社内ドキュメント参照)。
 
+**補足(実際にハマったポイント)**
+
+- `testGeminiRaytech_` のように名前の末尾が `_` の関数は、GASエディタの実行関数プルダウンに
+  **表示されない**(GASの仕様)。見当たらない場合は、末尾に `_` が付かないテスト用関数
+  (例: `testGemini`、Code.gs内に用意済み)を代わりに選んで実行すること。
+- appsscript.jsonの設定・初回承認とも問題ないのに`ACCESS_TOKEN_SCOPE_INSUFFICIENT`
+  (403)が解消しない場合、原因はほぼ確実に**AI推進室側でのこのアカウントへの利用許可が
+  未完了**であることだった。一般的な情報システム部の窓口に問い合わせても、
+  「GeminiRaytechの利用権限(AI推進室が管理しているaiplatform.googleapis.comへの
+  アクセス)」だと明示しないと、別件の権限を再付与されて解決しないことがある。
+  エラー文言(`reason: ACCESS_TOKEN_SCOPE_INSUFFICIENT`)をそのまま伝えるとよい。
+- 上記が解決した直後は、今度は`404 Publisher model ... was not found`が出ることがある。
+  これは権限の問題ではなく、`generateText`/`generateContent`のmodelId省略時に
+  ライブラリ側が使うデフォルトモデル(ドキュメント記載の `gemini-2.5-flash` とは限らない)
+  が、このプロジェクトでは無効化されている場合に起きる。**必ずmodelIdを明示的に指定する**
+  こと。有効なモデル名は https://cloud.google.com/vertex-ai/generative-ai/docs/models
+  の「Model ID」欄を直接確認する(Google検索のAI概要は古い/不正確なモデル名を出すことが
+  あるため信用しないこと)。指定したモデルはスクリプトプロパティ`GEMINI_MODEL`にも
+  設定しておくと、Webアプリ本番側(`callGemini_`)にも反映される。
+
 ### 3-3. Webアプリとしてデプロイする
 
 1. Apps Scriptエディタ右上の「デプロイ」→「新しいデプロイ」

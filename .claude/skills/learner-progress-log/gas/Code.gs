@@ -164,6 +164,7 @@ function appendEntries_(ss, entries) {
 
 function findLearnerColumn_(sheet, learnerName) {
   var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return -1; // 受講者が1人もいない(=列が無い)シートは対象外
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   for (var c = 0; c < headers.length; c++) {
     if (String(headers[c]) === learnerName) return c + 1;
@@ -986,4 +987,11 @@ function buildWebAppHtml_() {
     '}' +
     'el.appendChild(card);});}' +
     '</script></body></html>';
+}
+
+// GeminiRaytechの疎通確認用(モデル名の動作確認・権限承認の再トリガーに使う一時的なテスト関数)。
+// 末尾が"_"で終わらない名前なので、エディタの実行関数プルダウンに表示される。
+function testGemini() {
+  var text = GeminiRaytech.generateText('こんにちは', 'gemini-3.6-flash');
+  Logger.log(text);
 }
