@@ -101,11 +101,51 @@ function createCompany(companyName) {
   return { sheetName: companyName };
 }
 
-// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)を追加する。
+// Webアプリ側のJavaScriptから呼ばれる。受講者の有無に関わらず、全企業(シート)名を返す。
+// (listStructure_は受講者0人のシートを一覧から除外するため、企業登録直後や受講者が
+// まだ0人のシートを「受講者を登録」用のプルダウンに出すには、こちらを使う必要がある)
+function getAllCompanyNames() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  var names = [];
+  for (var i = 0; i < sheets.length; i++) {
+    var nm = sheets[i].getName();
+    if (nm === GROUP_SHEET_NAME) continue; // グループ設定用の管理シートは除外
+    names.push(nm);
+  }
+  return names;
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)を1人追加する。
 function createLearner(sheetName, learnerName) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  createLearnerOne_(ss, sheetName, learnerName);
+  return listStructure_(ss);
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)をまとめて追加する。
+// 1人ずつ処理し、同名重複などで一部が失敗しても他の登録は続行する。
+// learnerNames: string[]
+function createLearners(sheetName, learnerNames) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var results = [];
+  for (var i = 0; i < learnerNames.length; i++) {
+    var name = String(learnerNames[i] || '').trim();
+    if (!name) continue;
+    try {
+      createLearnerOne_(ss, sheetName, name);
+      results.push({ learner: name, status: 'created' });
+    } catch (err) {
+      results.push({ learner: name, status: 'error', error: String((err && err.message) || err) });
+    }
+  }
+  return { results: results, structure: listStructure_(ss) };
+}
+
+// createLearner / createLearners の共通処理。実際にシートへ列を1つ追加する。
+function createLearnerOne_(ss, sheetName, learnerName) {
   learnerName = String(learnerName || '').trim();
   if (!learnerName) throw new Error('受講者名を入力してください。');
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(sheetName);
   if (!sh) throw new Error('シートが見つかりません: ' + sheetName);
   if (findLearnerColumn_(sh, learnerName) !== -1) {
@@ -116,7 +156,6 @@ function createLearner(sheetName, learnerName) {
   var cell = sh.getRange(1, targetCol);
   cell.setValue(learnerName);
   cell.setFontWeight('bold');
-  return listStructure_(ss);
 }
 
 // ===== 書き込み =====
@@ -580,10 +619,19 @@ function buildWebAppHtml_() {
     '.sf-header{background:var(--sf-navy);color:#fff;padding:16px 24px;font-size:17px;font-weight:700;' +
     'display:flex;align-items:center;gap:8px;}' +
     '.sf-dot{width:9px;height:9px;border-radius:50%;background:var(--sf-blue);display:inline-block;flex:none;}' +
-    '.sf-container{max-width:860px;margin:24px auto;padding:0 20px 48px;transition:max-width .15s;}' +
-    '.sf-container.wide{max-width:1360px;}' +
+'.sf-container{max-width:1360px;margin:24px auto;padding:0 20px 48px;}' +
     '.sf-card{background:#fff;border:1px solid var(--sf-border);border-radius:8px;' +
     'box-shadow:0 1px 3px rgba(0,0,0,.08);padding:28px 32px 32px;}' +
+    '.field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:4px 24px;max-width:900px;}' +
+    '.field-grid .field{margin-bottom:18px;}' +
+    '.field-narrow{max-width:640px;}' +
+    '.dropzone{border:2px dashed var(--sf-input-border);border-radius:8px;padding:20px;' +
+    'text-align:center;background:#fafaf9;transition:.15s;}' +
+    '.dropzone.dragover{border-color:var(--sf-blue);background:#eaf5fe;}' +
+    '.dropzone input[type=file]{display:block;margin:0 auto 8px;max-width:360px;}' +
+    '.dropzone-hint{font-size:12.5px;color:var(--sf-muted);}' +
+    '.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-top:14px;}' +
+    '.card-grid .card{margin-bottom:0;}' +
     'h2{margin:0 0 4px;font-size:19px;font-weight:700;color:var(--sf-navy);}' +
     'h3{margin:0 0 4px;font-size:15.5px;font-weight:700;color:var(--sf-navy);}' +
     '.hint{font-size:13px;color:var(--sf-muted);line-height:1.6;margin:0 0 18px;}' +
@@ -642,13 +690,18 @@ function buildWebAppHtml_() {
     '<p class="hint">Zoomの文字起こし(.vtt)をアップロードして「AIで要約を作成」を押すと、下の記録内容欄に' +
     '下書きが自動で入ります。内容を確認・必要なら修正してから「この内容で書き込む」を押してください。</p>' +
 
-    '<div class="field"><label>グループから対象者を読み込む(任意・集団相談の場合)</label>' +
+    '<div class="field field-narrow"><label>グループから対象者を読み込む(任意・集団相談の場合)</label>' +
     '<select id="groupSelect"></select></div>' +
     '<button onclick="loadGroupIntoWriteTab()">このグループを対象者欄に読み込む</button>' +
     '<hr>' +
 
-    '<div class="field"><label>VTTファイル</label><input type="file" id="vttFile" accept=".vtt"></div>' +
-    '<div class="field"><label>実施日</label><input type="date" id="sessionDate"></div>' +
+    '<div class="field field-narrow"><label>VTTファイル</label>' +
+    '<div class="dropzone" id="vttDropzone">' +
+    '<input type="file" id="vttFile" accept=".vtt">' +
+    '<div class="dropzone-hint">クリックして選択、またはここにファイルをドラッグ&ドロップ</div>' +
+    '</div></div>' +
+    '<div class="field field-narrow"><label>実施日</label><input type="date" id="sessionDate">' +
+    '<div class="hint" id="dateGuessHint" style="margin:6px 0 0"></div></div>' +
 
     '<div id="rows"></div>' +
     '<button onclick="addRow()">+ 対象者を追加(集団相談の場合)</button>' +
@@ -663,22 +716,22 @@ function buildWebAppHtml_() {
     '<p class="hint">企業を選ぶと、その企業の全受講者について直近の記録を一覧できます。' +
     '受講者を選んで「全記録を見る」を押すと、その人の全期間の記録を新しい順に確認できます。' +
     '「表でまとめて見る」では、回数を縦・受講者を横並びにした一覧表で見られます(PC画面向け)。</p>' +
-    '<div class="field"><label>企業(シート)</label><select id="viewSheet" onchange="onViewSheetChange()"></select></div>' +
+    '<div class="field field-narrow"><label>企業(シート)</label><select id="viewSheet" onchange="onViewSheetChange()"></select></div>' +
     '<button onclick="loadCompanyOverview()">この企業の最新状況を一覧</button>' +
     '<button onclick="loadCompanyMatrix()">表でまとめて見る(PC向け)</button>' +
-    '<div id="companyOverview"></div>' +
+    '<div id="companyOverview" class="card-grid"></div>' +
     '<div id="companyMatrix"></div>' +
     '<hr>' +
-    '<div class="field"><label>受講者</label><select id="viewLearner"></select></div>' +
+    '<div class="field field-narrow"><label>受講者</label><select id="viewLearner"></select></div>' +
     '<button onclick="loadLearnerHistory()">この受講者の全記録を見る</button>' +
     '<div id="learnerHistory"></div>' +
 
     '<hr>' +
     '<h3>グループで見る</h3>' +
     '<p class="hint">集団相談のグループ単位で、メンバー全員(企業をまたいでもよい)の直近の記録をまとめて確認できます。</p>' +
-    '<div class="field"><label>グループ</label><select id="viewGroupSelect"></select></div>' +
+    '<div class="field field-narrow"><label>グループ</label><select id="viewGroupSelect"></select></div>' +
     '<button onclick="loadGroupOverview()">このグループの状況を一覧</button>' +
-    '<div id="groupOverview"></div>' +
+    '<div id="groupOverview" class="card-grid"></div>' +
     '</div>' +
 
     '<div id="manageTab" style="display:none">' +
@@ -686,14 +739,15 @@ function buildWebAppHtml_() {
     '<p class="hint">新しい企業(シート)や受講者を追加できます。企業を登録した直後は受講者が0人なので、' +
     'このあと続けて受講者を最低1人登録してください(受講者が0人の間は他の画面のプルダウンにまだ出てきません)。</p>' +
 
-    '<div class="field"><label>新しい企業名</label><input type="text" id="newCompanyName" placeholder="例: サンプル商事株式会社"></div>' +
+    '<div class="field field-narrow"><label>新しい企業名</label><input type="text" id="newCompanyName" placeholder="例: サンプル商事株式会社"></div>' +
     '<button class="primary" onclick="createCompanyClick()">企業を登録</button>' +
     '<div id="companyCreateStatus" class="hint"></div>' +
 
     '<hr>' +
 
-    '<div class="field"><label>企業(シート)</label><select id="learnerCompanySelect"></select></div>' +
-    '<div class="field"><label>新しい受講者名</label><input type="text" id="newLearnerName" placeholder="例: 山田太郎"></div>' +
+    '<div class="field field-narrow"><label>企業(シート)</label><select id="learnerCompanySelect"></select></div>' +
+    '<div class="field field-narrow"><label>新しい受講者名(複数人まとめて登録する場合は1行に1人ずつ)</label>' +
+    '<textarea id="newLearnerNames" rows="4" placeholder="例:\n山田太郎\n鈴木花子"></textarea></div>' +
     '<button class="primary" onclick="createLearnerClick()">受講者を登録</button>' +
     '<div id="learnerCreateStatus" class="hint"></div>' +
 
@@ -702,11 +756,11 @@ function buildWebAppHtml_() {
     '<h2>グループ管理(集団相談用)</h2>' +
     '<p class="hint">よく行う集団相談の組み合わせを「グループ」として保存しておくと、' +
     '「記録を追加」タブで対象者欄をまとめて呼び出せます(複数企業にまたがってもよい)。</p>' +
-    '<div id="groupList"></div>' +
+    '<div id="groupList" class="card-grid"></div>' +
     '<div id="groupRows"></div>' +
     '<button onclick="addGroupRow()">+ メンバーを追加</button>' +
     '<br>' +
-    '<div class="field"><label>グループ名</label><input type="text" id="newGroupName" placeholder="例: サンプル商事+テスト工業 合同研修"></div>' +
+    '<div class="field field-narrow"><label>グループ名</label><input type="text" id="newGroupName" placeholder="例: サンプル商事+テスト工業 合同研修"></div>' +
     '<button class="primary" onclick="saveGroupClick()">このメンバーでグループを保存</button>' +
     '<div id="groupSaveStatus" class="hint"></div>' +
     '</div>' +
@@ -714,20 +768,62 @@ function buildWebAppHtml_() {
     '</div></div>' +
 
     '<script>' +
-    'let structure=[];let rowCount=0;let groupRowCount=0;let vttText="";let groupsCache=[];' +
+    'let structure=[];let allCompanyNames=[];let rowCount=0;let groupRowCount=0;let vttText="";' +
+    'let groupsCache=[];let firstRowPrefillDone=false;' +
     'google.script.run.withSuccessHandler(function(data){' +
-    'structure=data;addRow();populateViewSheet();populateLearnerCompanySelect();addGroupRow();})' +
+    'structure=data;addRow();populateViewSheet();addGroupRow();})' +
     '.withFailureHandler(function(err){setStatus("読み込みエラー: "+err.message);})' +
     '.getStructureForDialog();' +
+    'google.script.run.withSuccessHandler(function(names){allCompanyNames=names||[];populateLearnerCompanySelect();})' +
+    '.withFailureHandler(function(err){document.getElementById("learnerCreateStatus").textContent="読み込みエラー: "+err.message;})' +
+    '.getAllCompanyNames();' +
     'google.script.run.withSuccessHandler(renderGroupList)' +
     '.withFailureHandler(function(err){document.getElementById("groupList").textContent="読み込みエラー: "+err.message;})' +
     '.getGroups();' +
 
-    'document.getElementById("vttFile").addEventListener("change",function(ev){' +
-    'const f=ev.target.files[0];if(!f)return;' +
+    'function handleVttFile(f){if(!f)return;' +
     'const reader=new FileReader();' +
-    'reader.onload=function(e){vttText=e.target.result;setStatus("VTT読み込み完了: "+f.name);};' +
-    'reader.readAsText(f);});' +
+    'reader.onload=function(e){' +
+    'vttText=e.target.result;' +
+    'const guessed=guessDateFromFilename(f.name);' +
+    'const hintEl=document.getElementById("dateGuessHint");' +
+    'if(guessed){document.getElementById("sessionDate").value=guessed;' +
+    'hintEl.textContent="ファイル名から実施日を "+guessed+" と推測しました。違う場合は修正してください。";' +
+    '}else{hintEl.textContent="";}' +
+    'setStatus("VTT読み込み完了: "+f.name);};' +
+    'reader.readAsText(f);}' +
+
+    'function guessDateFromFilename(name){' +
+    'let m=/GMT(\\d{4})(\\d{2})(\\d{2})/.exec(name);' +
+    'if(m)return m[1]+"-"+m[2]+"-"+m[3];' +
+    'm=/(\\d{4})-(\\d{2})-(\\d{2})/.exec(name);' +
+    'if(m)return m[1]+"-"+m[2]+"-"+m[3];' +
+    'm=/(\\d{4})(\\d{2})(\\d{2})/.exec(name);' +
+    'if(m){const mo=+m[2],d=+m[3];if(mo>=1&&mo<=12&&d>=1&&d<=31)return m[1]+"-"+m[2]+"-"+m[3];}' +
+    'return null;}' +
+
+    'document.getElementById("vttFile").addEventListener("change",function(ev){handleVttFile(ev.target.files[0]);});' +
+    '(function(){const dz=document.getElementById("vttDropzone");' +
+    'dz.addEventListener("dragover",function(ev){ev.preventDefault();dz.classList.add("dragover");});' +
+    'dz.addEventListener("dragleave",function(){dz.classList.remove("dragover");});' +
+    'dz.addEventListener("drop",function(ev){ev.preventDefault();dz.classList.remove("dragover");' +
+    'const f=ev.dataTransfer.files[0];if(!f)return;' +
+    'try{document.getElementById("vttFile").files=ev.dataTransfer.files;}catch(e){}' +
+    'handleVttFile(f);});})();' +
+
+    'function saveLastParticipant_(sheetName,learner){' +
+    'try{localStorage.setItem("learnerProgressLog.lastParticipant",JSON.stringify({sheetName:sheetName,learner:learner}));}catch(e){}}' +
+    'function loadLastParticipant_(){' +
+    'try{const v=localStorage.getItem("learnerProgressLog.lastParticipant");return v?JSON.parse(v):null;}catch(e){return null;}}' +
+    'function applyLastParticipant_(id){' +
+    'const last=loadLastParticipant_();if(!last)return;' +
+    'const sheetEl=document.getElementById("sheet-"+id);if(!sheetEl)return;' +
+    'const hasSheet=Array.prototype.some.call(sheetEl.options,function(o){return o.value===last.sheetName;});' +
+    'if(!hasSheet)return;' +
+    'sheetEl.value=last.sheetName;updateLearners(id);' +
+    'const learnerEl=document.getElementById("learner-"+id);' +
+    'const hasLearner=Array.prototype.some.call(learnerEl.options,function(o){return o.value===last.learner;});' +
+    'if(hasLearner)learnerEl.value=last.learner;}' +
 
     'function esc(s){return String(s).replace(/[&<>"\']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c];});}' +
 
@@ -741,15 +837,17 @@ function buildWebAppHtml_() {
     'document.getElementById("manageTab").style.display=(name==="manage")?"":"none";' +
     'document.getElementById("tabbtn-write").classList.toggle("active",name==="write");' +
     'document.getElementById("tabbtn-view").classList.toggle("active",name==="view");' +
-    'document.getElementById("tabbtn-manage").classList.toggle("active",name==="manage");' +
-    'document.getElementById("sfContainer").classList.toggle("wide",name==="view");}' +
+    'document.getElementById("tabbtn-manage").classList.toggle("active",name==="manage");}' +
 
     'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
     'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeRow("+id+")\\">✕ 削除</span>"+' +
-    '"<label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select>"+' +
-    '"<label>受講者</label><select id=\\"learner-"+id+"\\"></select>"+' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
+    '"<div class=\\"field\\"><label>受講者</label><select id=\\"learner-"+id+"\\"></select></div>"+' +
+    '"</div>"+' +
     '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>";' +
-    'document.getElementById("rows").appendChild(div);updateLearners(id);}' +
+    'document.getElementById("rows").appendChild(div);updateLearners(id);' +
+    'if(!firstRowPrefillDone){firstRowPrefillDone=true;applyLastParticipant_(id);}}' +
 
     'function updateLearners(id){' +
     'document.getElementById("learner-"+id).innerHTML=learnerOptionsHtml(document.getElementById("sheet-"+id).value);}' +
@@ -789,6 +887,8 @@ function buildWebAppHtml_() {
     'setStatus(results.map(function(r){' +
     'return (r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "+(r.status==="written"?r.cell:r.error);' +
     '}).join("\\n"));' +
+    'if(entries.length===1&&results[0]&&results[0].status==="written"){' +
+    'saveLastParticipant_(entries[0].sheetName,entries[0].learner);}' +
     '}).withFailureHandler(function(err){setStatus("書き込みエラー: "+err.message);})' +
     '.submitEntries(entries);}' +
 
@@ -861,8 +961,11 @@ function buildWebAppHtml_() {
     '+"<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
     'el.appendChild(card);});}' +
 
+    'function allCompanyOptionsHtml(){return allCompanyNames.map(function(n){' +
+    'return "<option value=\\""+esc(n)+"\\">"+esc(n)+"</option>";}).join("");}' +
+
     'function populateLearnerCompanySelect(){' +
-    'document.getElementById("learnerCompanySelect").innerHTML=sheetOptionsHtml();}' +
+    'document.getElementById("learnerCompanySelect").innerHTML=allCompanyOptionsHtml();}' +
 
     'function createCompanyClick(){' +
     'const input=document.getElementById("newCompanyName");const name=input.value.trim();' +
@@ -870,8 +973,8 @@ function buildWebAppHtml_() {
     'if(!name){statusEl.textContent="企業名を入力してください。";return;}' +
     'statusEl.textContent="登録中...";' +
     'google.script.run.withSuccessHandler(function(){' +
-    'structure.push({sheetName:name,learners:[]});' +
-    'populateViewSheet();populateLearnerCompanySelect();' +
+    'if(allCompanyNames.indexOf(name)===-1)allCompanyNames.push(name);' +
+    'populateLearnerCompanySelect();' +
     'input.value="";' +
     'statusEl.textContent="✅ 登録しました: "+name+"(続けて受講者を登録してください)";' +
     '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
@@ -879,21 +982,27 @@ function buildWebAppHtml_() {
 
     'function createLearnerClick(){' +
     'const sheetName=document.getElementById("learnerCompanySelect").value;' +
-    'const input=document.getElementById("newLearnerName");const name=input.value.trim();' +
+    'const input=document.getElementById("newLearnerNames");' +
+    'const names=input.value.split("\\n").map(function(s){return s.trim();}).filter(function(s){return s;});' +
     'const statusEl=document.getElementById("learnerCreateStatus");' +
-    'if(!name){statusEl.textContent="受講者名を入力してください。";return;}' +
+    'if(!sheetName){statusEl.textContent="企業(シート)を選択してください。";return;}' +
+    'if(names.length===0){statusEl.textContent="受講者名を1人以上入力してください。";return;}' +
     'statusEl.textContent="登録中...";' +
     'google.script.run.withSuccessHandler(function(data){' +
-    'structure=data;populateViewSheet();populateLearnerCompanySelect();' +
-    'input.value="";' +
-    'statusEl.textContent="✅ 登録しました: "+sheetName+" / "+name;' +
+    'structure=data.structure;populateViewSheet();' +
+    'const lines=data.results.map(function(r){' +
+    'return (r.status==="created"?"✅ ":"❌ ")+r.learner+(r.status==="error"?"("+r.error+")":"");});' +
+    'if(data.results.some(function(r){return r.status==="created";}))input.value="";' +
+    'statusEl.textContent=lines.join("\\n");' +
     '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
-    '.createLearner(sheetName,name);}' +
+    '.createLearners(sheetName,names);}' +
 
     'function addGroupRow(){groupRowCount++;const id=groupRowCount;const div=document.createElement("div");div.className="row";div.id="grouprow-"+id;' +
     'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeGroupRow("+id+")\\">✕ 削除</span>"+' +
-    '"<label>企業(シート)</label><select onchange=\\"updateGroupLearners("+id+")\\" id=\\"gsheet-"+id+"\\">"+sheetOptionsHtml()+"</select>"+' +
-    '"<label>受講者</label><select id=\\"glearner-"+id+"\\"></select>";' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateGroupLearners("+id+")\\" id=\\"gsheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
+    '"<div class=\\"field\\"><label>受講者</label><select id=\\"glearner-"+id+"\\"></select></div>"+' +
+    '"</div>";' +
     'document.getElementById("groupRows").appendChild(div);updateGroupLearners(id);}' +
 
     'function updateGroupLearners(id){' +
