@@ -32,6 +32,15 @@
 // 企業(受講者)一覧には絶対に含めないこと(listStructure_側でも除外している)。
 var GROUP_SHEET_NAME = 'グループ設定';
 
+// 要約に使うGeminiのモデルID。
+// GeminiRaytechはmodelIdを省略すると独自の既定モデルを使うが、それがこのプロジェクトで
+// 有効化されているとは限らず、404 (Publisher model ... was not found) になる。実際に
+// gemini-2.0-flash が使われて失敗したため、動作確認済みのモデルをコード側で明示する。
+// 別のモデルに変えたい場合は、スクリプトプロパティ GEMINI_MODEL に設定すればそちらが優先される。
+// 有効なモデルIDは https://cloud.google.com/vertex-ai/generative-ai/docs/models の
+// 「Model ID」欄で確認すること。
+var GEMINI_MODEL_DEFAULT = 'gemini-3.6-flash';
+
 // ===== メニュー =====
 
 function onOpen() {
@@ -581,7 +590,7 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
  *      承認ポップアップが出せないため、必ずエディタから先に一度実行しておくこと)
  */
 function callGemini_(prompt) {
-  var model = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || undefined; // 未設定ならライブラリの既定(gemini-2.5-flash)
+  var model = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || GEMINI_MODEL_DEFAULT;
   var text;
   try {
     text = GeminiRaytech.generateText(prompt, model);
@@ -603,7 +612,7 @@ function callGemini_(prompt) {
  * (詳細は gas/DEPLOY.md 「初回実行時の注意点」を参照)
  */
 function testGeminiRaytech_() {
-  var text = GeminiRaytech.generateText('こんにちは');
+  var text = GeminiRaytech.generateText('こんにちは', GEMINI_MODEL_DEFAULT);
   Logger.log(text);
 }
 
@@ -1107,6 +1116,6 @@ function buildWebAppHtml_() {
 // GeminiRaytechの疎通確認用(モデル名の動作確認・権限承認の再トリガーに使う一時的なテスト関数)。
 // 末尾が"_"で終わらない名前なので、エディタの実行関数プルダウンに表示される。
 function testGemini() {
-  var text = GeminiRaytech.generateText('こんにちは', 'gemini-3.6-flash');
+  var text = GeminiRaytech.generateText('こんにちは', GEMINI_MODEL_DEFAULT);
   Logger.log(text);
 }

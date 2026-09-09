@@ -80,12 +80,15 @@ Webアプリ経由の初回実行では権限承認のポップアップを出�
   エラー文言(`reason: ACCESS_TOKEN_SCOPE_INSUFFICIENT`)をそのまま伝えるとよい。
 - 上記が解決した直後は、今度は`404 Publisher model ... was not found`が出ることがある。
   これは権限の問題ではなく、`generateText`/`generateContent`のmodelId省略時に
-  ライブラリ側が使うデフォルトモデル(ドキュメント記載の `gemini-2.5-flash` とは限らない)
-  が、このプロジェクトでは無効化されている場合に起きる。**必ずmodelIdを明示的に指定する**
-  こと。有効なモデル名は https://cloud.google.com/vertex-ai/generative-ai/docs/models
-  の「Model ID」欄を直接確認する(Google検索のAI概要は古い/不正確なモデル名を出すことが
-  あるため信用しないこと)。指定したモデルはスクリプトプロパティ`GEMINI_MODEL`にも
-  設定しておくと、Webアプリ本番側(`callGemini_`)にも反映される。
+  ライブラリ側が使うデフォルトモデル(実測では`gemini-2.0-flash`。社内ドキュメント記載の
+  `gemini-2.5-flash`とは異なっていた)が、このプロジェクトでは有効化されていないために起きる。
+  **modelIdは必ず明示的に指定すること。** そのため`Code.gs`の先頭で
+  `GEMINI_MODEL_DEFAULT`(現在は`gemini-3.6-flash`)を定義し、`callGemini_`・
+  `testGeminiRaytech_`・`testGemini`のすべてがこの定数を使うようにしてある。スクリプト
+  プロパティの設定は不要(設定は任意で、`GEMINI_MODEL`を入れた場合はそちらが優先される)。
+- モデルを変えたくなった場合は、`Code.gs`の`GEMINI_MODEL_DEFAULT`を書き換える。有効なモデル名は
+  https://cloud.google.com/vertex-ai/generative-ai/docs/models の「Model ID」欄を直接
+  確認すること(Google検索のAI概要は実在しないモデル名を出すことがあったため信用しない)。
 
 ### 3-3. Webアプリとしてデプロイする
 
