@@ -574,6 +574,98 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
 }
 
 /**
+ * Webアプリ側のJavaScriptから呼ばれる。複数のVTTについて、それぞれが「どの企業のどの受講者との
+ * 相談会か」をまとめてGeminiに推定させる(個別相談のVTTを一括登録するとき用)。
+ *
+ * VTT全文ではなく、Zoomの話者表示名と冒頭の抜粋だけを送る(全文を件数分送ると時間もトークンも
+ * かかりすぎるため)。またWebアプリ側で先に登録済み受講者名との単純な文字列照合をしているので、
+ * ここに渡ってくるのは基本的に照合できなかったファイルだけになる。
+ *
+ * 推定はあくまで下書きで、書き込む前にユーザーが画面のプルダウンで確認・修正する前提。
+ * 誤書き込みを防ぐため、候補リストに無い組み合わせをモデルが返してきた場合は採用しない。
+ *
+ * payload: { files: [{ id, name, speakers: [...], excerpt }], candidates: [{ sheetName, learner }] }
+ * 戻り値: [{ id, sheetName, learner }] (判断できなかったファイルは含まれない)
+ */
+function estimateTargets(payload) {
+  var files = (payload && payload.files) || [];
+  var candidates = (payload && payload.candidates) || [];
+  if (files.length === 0 || candidates.length === 0) return [];
+
+  var parsed = parseJsonArray_(callGemini_(buildEstimatePrompt_(files, candidates)));
+
+  var valid = {};
+  for (var i = 0; i < candidates.length; i++) {
+    valid[candidates[i].sheetName + ' ' + candidates[i].learner] = true;
+  }
+
+  var out = [];
+  for (var j = 0; j < parsed.length; j++) {
+    var item = parsed[j] || {};
+    var no = Number(item.file);
+    if (!(no >= 1 && no <= files.length)) continue; // ファイル番号が不正なものは捨てる
+    var sheetName = String(item.company || '');
+    var learner = String(item.learner || '');
+    if (!valid[sheetName + ' ' + learner]) continue; // 候補に無い組み合わせは採用しない
+    out.push({ id: files[no - 1].id, sheetName: sheetName, learner: learner });
+  }
+  return out;
+}
+
+function buildEstimatePrompt_(files, candidates) {
+  var lines = [
+    'あなたは、企業向けITスキル研修(リスキリング支援サービス)の運営担当者です。',
+    'Zoom個別相談会の文字起こし(VTT)が複数あります。それぞれが「どの企業のどの受講者との',
+    '相談会か」を、下の候補リストの中から選んでください。',
+    '',
+    '# 候補リスト(この中の組み合わせからのみ選ぶこと)'
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    lines.push('- 企業: ' + candidates[i].sheetName + ' / 受講者: ' + candidates[i].learner);
+  }
+  lines.push('');
+  lines.push('# 判定対象のファイル');
+  for (var j = 0; j < files.length; j++) {
+    var f = files[j] || {};
+    var speakers = f.speakers || [];
+    lines.push('[' + (j + 1) + '] ファイル名: ' + String(f.name || ''));
+    lines.push('    Zoomの話者表示名: ' + (speakers.length ? speakers.join('、') : '(取得できず)'));
+    lines.push('    冒頭の抜粋: ' + String(f.excerpt || '').replace(/\n/g, ' / '));
+  }
+  lines.push('');
+  lines.push('# 出力形式');
+  lines.push('次の形式のJSON配列だけを出力してください。前置き・説明文・Markdownのコードブロックは');
+  lines.push('一切付けないこと。');
+  lines.push('[{"file":1,"company":"候補リストの企業名","learner":"候補リストの受講者名"}]');
+  lines.push('');
+  lines.push('- file は上の [] 内の番号。');
+  lines.push('- company と learner は、必ず候補リストにある組み合わせを、そのままの表記で書くこと。');
+  lines.push('- 話者表示名がローマ字・ニックネーム・端末名などで候補と一致しない場合は、');
+  lines.push('  会話の内容(自己紹介・呼びかけ・所属企業の話題など)から判断すること。');
+  lines.push('- 相談会の進行役(運営担当者)は受講者ではないので選ばないこと。');
+  lines.push('- どの候補か判断できないファイルは、配列に含めないこと(推測で埋めないこと)。');
+  return lines.join('\n');
+}
+
+/**
+ * モデルの応答からJSON配列を取り出す。「JSONだけを出力せよ」と指示しても、前置きや
+ * Markdownのコードブロックが付いてくることがあるため、最初の[から最後の]までを切り出す。
+ * 取り出せなかった場合は空配列を返す(推定は必須機能ではなく、失敗しても手動で選べばよい)。
+ */
+function parseJsonArray_(text) {
+  var s = String(text || '');
+  var start = s.indexOf('[');
+  var end = s.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return [];
+  try {
+    var v = JSON.parse(s.slice(start, end + 1));
+    return Object.prototype.toString.call(v) === '[object Array]' ? v : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+/**
  * Gemini APIを呼び出して要約テキストを取得する。
  *
  * 個人のGemini APIキーを直接使う方式(旧実装)は廃止した。社内のAI推進室が用意した
@@ -646,9 +738,14 @@ function buildWebAppHtml_() {
     '.dropzone-hint{font-size:12.5px;color:var(--sf-muted);}' +
     '.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-top:14px;}' +
     '.card-grid .card{margin-bottom:0;}' +
+    '.bulk-file{font-weight:700;color:var(--sf-navy);font-size:14px;margin-bottom:14px;' +
+    'padding-right:76px;word-break:break-all;}' +
+    '.bulk-cardstatus{margin-top:10px;font-size:12.5px;color:var(--sf-muted);white-space:pre-wrap;}' +
+    '#bulkStatus{margin-top:16px;white-space:pre-wrap;font-size:13.5px;color:var(--sf-text);}' +
     '.view-toolbar{display:flex;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-bottom:16px;}' +
     '.view-toolbar .field{margin-bottom:0;min-width:280px;}' +
     '.viewmode{display:inline-flex;border:1px solid var(--sf-border);border-radius:6px;overflow:hidden;}' +
+    '#writeModeWrap{margin:6px 0 22px;}' +
     '.modebtn{margin:0;border:none;border-radius:0;background:#fff;color:var(--sf-muted);padding:9px 18px;}' +
     '.modebtn:hover{background:var(--sf-bg);}' +
     '.modebtn.active,.modebtn.active:hover{background:var(--sf-accent);color:#fff;}' +
@@ -696,6 +793,8 @@ function buildWebAppHtml_() {
     'padding:3px 11px;font-size:12px;font-weight:600;margin-left:6px;' +
     'font-family:var(--sf-num-font);font-variant-numeric:tabular-nums;}' +
     '.badge-muted{background:var(--sf-bg);color:var(--sf-muted);}' +
+    '.badge-ai{background:#fff1f2;color:var(--sf-accent-dark);}' +
+    '.badge-alert{background:var(--sf-danger);color:#fff;}' +
     '.cardtext{white-space:pre-wrap;margin-top:10px;font-size:13.5px;color:var(--sf-text);line-height:1.6;' +
     'background:var(--sf-bg);border:1px solid #eef2f6;border-radius:6px;padding:12px;}' +
     '#companyMatrix{margin-top:14px;}' +
@@ -722,6 +821,12 @@ function buildWebAppHtml_() {
 
     '<div id="writeTab">' +
     '<h2>VTTから自動作成</h2>' +
+    '<div class="viewmode" id="writeModeWrap">' +
+    '<button type="button" class="modebtn active" id="wmode-single" onclick="setWriteMode(\'single\')">1件ずつ(個別・集団相談)</button>' +
+    '<button type="button" class="modebtn" id="wmode-bulk" onclick="setWriteMode(\'bulk\')">複数VTTを一括(個別相談)</button>' +
+    '</div>' +
+
+    '<div id="singleWrite">' +
     '<p class="hint">Zoomの文字起こし(.vtt)をアップロードして「AIで要約を作成」を押すと、下の記録内容欄に' +
     '下書きが自動で入ります。内容を確認・必要なら修正してから「この内容で書き込む」を押してください。</p>' +
 
@@ -744,6 +849,29 @@ function buildWebAppHtml_() {
     '<button class="primary" onclick="generateAll()">AIで要約を作成</button>' +
     '<button class="primary" onclick="submitAll()">この内容で書き込む</button>' +
     '<div id="status"></div>' +
+    '</div>' +
+
+    '<div id="bulkWrite" style="display:none">' +
+    '<p class="hint">個別相談のVTTをまとめてアップロードすると、ファイル1つにつき1枚のカードが並びます。' +
+    '実施日はファイル名から、対象者はZoomの話者名(一致しない場合はAIによる推定)から自動で入るので、' +
+    '合っているかを確認・修正してから「AIで要約をまとめて作成」→「この内容でまとめて書き込む」を押してください。' +
+    '<b>対象者の自動選択はあくまで下書きです。書き込む前に必ず目視で確認してください。</b></p>' +
+
+    '<div class="field field-narrow"><label>VTTファイル(複数選択できます)</label>' +
+    '<div class="dropzone" id="bulkDropzone">' +
+    '<input type="file" id="bulkVttFiles" accept=".vtt" multiple>' +
+    '<div class="dropzone-hint">クリックしてまとめて選択、またはここに複数のファイルをドラッグ&ドロップ</div>' +
+    '</div></div>' +
+
+    '<div id="bulkList"></div>' +
+    '<button onclick="estimateBulkTargets(false)">AIで対象者を推定し直す</button>' +
+    '<button onclick="clearBulk()">読み込んだファイルを全て消す</button>' +
+    '<br>' +
+    '<button class="primary" onclick="generateBulkSummaries()">AIで要約をまとめて作成</button>' +
+    '<button class="primary" onclick="submitBulk()">この内容でまとめて書き込む</button>' +
+    '<div id="bulkStatus"></div>' +
+    '</div>' +
+
     '</div>' +
 
     '<div id="viewTab" style="display:none">' +
@@ -802,6 +930,7 @@ function buildWebAppHtml_() {
     '<script>' +
     'let structure=[];let allCompanyNames=[];let rowCount=0;let groupRowCount=0;let vttText="";' +
     'let groupsCache=[];let firstRowPrefillDone=false;let viewMode="cards";let viewLoaded=false;' +
+    'let writeMode="single";let bulkFiles=[];let bulkCount=0;' +
     'google.script.run.withSuccessHandler(function(data){' +
     'structure=data;addRow();populateViewTarget();addGroupRow();})' +
     '.withFailureHandler(function(err){setStatus("読み込みエラー: "+err.message);})' +
@@ -839,9 +968,206 @@ function buildWebAppHtml_() {
     'dz.addEventListener("dragover",function(ev){ev.preventDefault();dz.classList.add("dragover");});' +
     'dz.addEventListener("dragleave",function(){dz.classList.remove("dragover");});' +
     'dz.addEventListener("drop",function(ev){ev.preventDefault();dz.classList.remove("dragover");' +
-    'const f=ev.dataTransfer.files[0];if(!f)return;' +
-    'try{document.getElementById("vttFile").files=ev.dataTransfer.files;}catch(e){}' +
-    'handleVttFile(f);});})();' +
+    'const fs=ev.dataTransfer.files;if(!fs||!fs.length)return;' +
+    'if(fs.length>1){setWriteMode("bulk");handleBulkFiles(fs);return;}' +
+    'try{document.getElementById("vttFile").files=fs;}catch(e){}' +
+    'handleVttFile(fs[0]);});})();' +
+
+    'function setWriteMode(m){writeMode=m;' +
+    'document.getElementById("singleWrite").style.display=(m==="single")?"":"none";' +
+    'document.getElementById("bulkWrite").style.display=(m==="bulk")?"":"none";' +
+    'document.getElementById("wmode-single").classList.toggle("active",m==="single");' +
+    'document.getElementById("wmode-bulk").classList.toggle("active",m==="bulk");}' +
+
+    'function setBulkStatus(msg){document.getElementById("bulkStatus").textContent=msg||"";}' +
+    'function setBulkCardStatus(id,msg){const el=document.getElementById("bstatus-"+id);if(el)el.textContent=msg||"";}' +
+    'function setBulkBadge(id,text,cls){const el=document.getElementById("bulkbadge-"+id);if(!el)return;' +
+    'if(!text){el.style.display="none";el.textContent="";return;}' +
+    'el.style.display="";el.className="badge"+(cls?" "+cls:"");el.textContent=text;}' +
+
+    'function bulkSheetOptionsHtml(){return "<option value=\\"\\">(選択してください)</option>"+sheetOptionsHtml();}' +
+    'function bulkLearnerOptionsHtml(s){return "<option value=\\"\\">(選択してください)</option>"+learnerOptionsHtml(s);}' +
+    'function updateBulkLearners(id){' +
+    'document.getElementById("blearner-"+id).innerHTML=bulkLearnerOptionsHtml(document.getElementById("bsheet-"+id).value);}' +
+    'function onBulkManualChange(id){setBulkBadge(id,"手動で選択","");}' +
+    'function removeBulk(id){const el=document.getElementById("bulk-"+id);if(el)el.remove();' +
+    'bulkFiles=bulkFiles.filter(function(r){return r.id!==id;});}' +
+    'function clearBulk(){document.getElementById("bulkList").innerHTML="";bulkFiles=[];' +
+    'try{document.getElementById("bulkVttFiles").value="";}catch(e){}setBulkStatus("");}' +
+
+    'function parseVtt(text){' +
+    'const lines=String(text||"").split(/\\r?\\n/);' +
+    'const counts=Object.create(null);const order=[];let excerpt="";' +
+    'for(let i=0;i<lines.length;i++){' +
+    'let ln=lines[i].trim();' +
+    'if(!ln)continue;' +
+    'if(/^WEBVTT/i.test(ln))continue;' +
+    'if(ln.indexOf("--\\u003e")!==-1)continue;' +
+    'if(/^\\d+$/.test(ln))continue;' +
+    'if(/^(NOTE|STYLE|REGION)\\b/.test(ln))continue;' +
+    'let speaker=null;' +
+    'let m=/^<v\\s+([^>]+)>/.exec(ln);' +
+    'if(m){speaker=m[1].trim();ln=ln.replace(/^<v\\s+[^>]+>/,"").replace(/<\\/v>$/,"").trim();}' +
+    'else{m=/^([^:：]{1,30})[:：]\\s*(.*)$/.exec(ln);if(m){speaker=m[1].trim();ln=m[2].trim();}}' +
+    'if(speaker){if(counts[speaker]===undefined){counts[speaker]=0;order.push(speaker);}counts[speaker]++;}' +
+    'if(excerpt.length<1200)excerpt+=(speaker?speaker+": ":"")+ln+"\\n";}' +
+    'order.sort(function(a,b){return counts[b]-counts[a];});' +
+    'return {speakers:order.slice(0,12),excerpt:excerpt.slice(0,1200)};}' +
+
+    'function normName(s){return String(s||"").replace(/[（(][^）)]*[）)]/g,"")' +
+    '.replace(/[\\s\\u3000・,，.．]/g,"").toLowerCase();}' +
+
+    'function learnerCandidates(){const out=[];' +
+    'structure.forEach(function(s){s.learners.forEach(function(l){' +
+    'out.push({sheetName:s.sheetName,learner:l.learner});});});return out;}' +
+
+    'function localGuess(speakers){' +
+    'const cands=learnerCandidates().map(function(c){' +
+    'return {sheetName:c.sheetName,learner:c.learner,norm:normName(c.learner)};});' +
+    'const sp=(speakers||[]).map(normName).filter(function(x){return x;});' +
+    'if(!sp.length)return null;' +
+    'const exact=cands.filter(function(c){return c.norm&&sp.indexOf(c.norm)!==-1;});' +
+    'if(exact.length)return exact.length===1?exact[0]:null;' +
+    'const partial=cands.filter(function(c){' +
+    'if(c.norm.length<2)return false;' +
+    'return sp.some(function(x){' +
+    'return x.length>=2&&(x.indexOf(c.norm)!==-1||c.norm.indexOf(x)!==-1);});});' +
+    'return partial.length===1?partial[0]:null;}' +
+
+    'function addBulkCard(name){bulkCount++;const id=bulkCount;' +
+    'const rec={id:id,name:name,text:"",speakers:[],excerpt:""};bulkFiles.push(rec);' +
+    'const div=document.createElement("div");div.className="row";div.id="bulk-"+id;' +
+    'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeBulk("+id+")\\">✕ 削除</span>"+' +
+    '"<div class=\\"bulk-file\\">"+esc(name)+" <span class=\\"badge\\" id=\\"bulkbadge-"+id+"\\"></span></div>"+' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><label>実施日</label><input type=\\"date\\" id=\\"bdate-"+id+"\\"></div>"+' +
+    '"<div class=\\"field\\"><label>企業(シート)</label>"+' +
+    '"<select id=\\"bsheet-"+id+"\\" onchange=\\"updateBulkLearners("+id+");onBulkManualChange("+id+")\\">"+' +
+    'bulkSheetOptionsHtml()+"</select></div>"+' +
+    '"<div class=\\"field\\"><label>受講者</label>"+' +
+    '"<select id=\\"blearner-"+id+"\\" onchange=\\"onBulkManualChange("+id+")\\"></select></div>"+' +
+    '"</div>"+' +
+    '"<label>記録内容</label><textarea id=\\"btext-"+id+"\\" ' +
+    'placeholder=\\"「AIで要約をまとめて作成」を押すとここに下書きが入ります\\"></textarea>"+' +
+    '"<div class=\\"bulk-cardstatus\\" id=\\"bstatus-"+id+"\\"></div>";' +
+    'document.getElementById("bulkList").appendChild(div);' +
+    'updateBulkLearners(id);' +
+    'setBulkBadge(id,"対象者を選んでください","badge-alert");' +
+    'const guessed=guessDateFromFilename(name);' +
+    'if(guessed)document.getElementById("bdate-"+id).value=guessed;' +
+    'else setBulkCardStatus(id,"ファイル名から実施日を判定できませんでした。手動で入力してください。");' +
+    'return rec;}' +
+
+    'function handleBulkFiles(list){' +
+    'const files=Array.prototype.slice.call(list||[]);' +
+    'if(!files.length)return;' +
+    'let remaining=files.length;' +
+    'setBulkStatus("VTTを読み込み中...("+files.length+"件)");' +
+    'files.forEach(function(f){' +
+    'const rec=addBulkCard(f.name);' +
+    'const reader=new FileReader();' +
+    'reader.onload=function(e){rec.text=String(e.target.result||"");' +
+    'const parsed=parseVtt(rec.text);rec.speakers=parsed.speakers;rec.excerpt=parsed.excerpt;' +
+    'applyLocalGuess(rec);' +
+    'if(--remaining===0)afterBulkLoad();};' +
+    'reader.onerror=function(){setBulkCardStatus(rec.id,"❌ ファイルを読み込めませんでした。");' +
+    'if(--remaining===0)afterBulkLoad();};' +
+    'reader.readAsText(f);});}' +
+
+    'function applyLocalGuess(rec){' +
+    'const g=localGuess(rec.speakers);if(!g)return;' +
+    'document.getElementById("bsheet-"+rec.id).value=g.sheetName;' +
+    'updateBulkLearners(rec.id);' +
+    'document.getElementById("blearner-"+rec.id).value=g.learner;' +
+    'setBulkBadge(rec.id,"話者名から自動選択","");}' +
+
+    'function unresolvedBulk(){return bulkFiles.filter(function(r){' +
+    'const el=document.getElementById("blearner-"+r.id);return r.text&&el&&!el.value;});}' +
+
+    'function afterBulkLoad(){' +
+    'if(!unresolvedBulk().length){' +
+    'setBulkStatus("読み込みが終わりました。対象者はZoomの話者名から自動で選んでいます。' +
+    '合っているか確認してから要約を作成してください。");return;}' +
+    'estimateBulkTargets(true);}' +
+
+    'function estimateBulkTargets(onlyUnresolved){' +
+    'const targets=(onlyUnresolved?unresolvedBulk():bulkFiles).filter(function(r){return r.text;});' +
+    'if(!targets.length){setBulkStatus("先にVTTファイルを選択してください。");return;}' +
+    'const candidates=learnerCandidates();' +
+    'if(!candidates.length){' +
+    'setBulkStatus("受講者がまだ登録されていないため推定できません。「登録・管理」タブで登録してください。");return;}' +
+    'setBulkStatus("AIが対象者を推定中です...("+targets.length+"件・数十秒かかることがあります)");' +
+    'google.script.run.withSuccessHandler(function(res){' +
+    'let n=0;' +
+    '(res||[]).forEach(function(g){' +
+    'const rec=bulkFiles.find(function(r){return r.id===g.id;});if(!rec)return;' +
+    'const sheetEl=document.getElementById("bsheet-"+rec.id);' +
+    'const learnerEl=document.getElementById("blearner-"+rec.id);' +
+    'if(!sheetEl||!learnerEl)return;' +
+    'const prevSheet=sheetEl.value,prevLearner=learnerEl.value;' +
+    'sheetEl.value=g.sheetName;updateBulkLearners(rec.id);learnerEl.value=g.learner;' +
+    'if(learnerEl.value===g.learner){setBulkBadge(rec.id,"AIが推定","badge-ai");n++;return;}' +
+    'sheetEl.value=prevSheet;updateBulkLearners(rec.id);learnerEl.value=prevLearner;});' +
+    'const left=unresolvedBulk().length;' +
+    'setBulkStatus("AIが"+n+"件の対象者を推定しました。推定は下書きなので、書き込む前に必ず確認してください。"' +
+    '+(left?("　判断できなかった"+left+"件は手動で選んでください。"):""));' +
+    '}).withFailureHandler(function(err){' +
+    'setBulkStatus("対象者の推定でエラーが発生しました: "+err.message+"\\n対象者は手動で選んでください。");})' +
+    '.estimateTargets({files:targets.map(function(r){' +
+    'return {id:r.id,name:r.name,speakers:r.speakers,excerpt:r.excerpt};}),candidates:candidates});}' +
+
+    'function generateBulkSummaries(){' +
+    'const list=bulkFiles.filter(function(r){return r.text;});' +
+    'if(!list.length){setBulkStatus("先にVTTファイルを選択してください。");return;}' +
+    'let i=0,ok=0,ng=0;' +
+    'function next(){' +
+    'if(i>=list.length){' +
+    'setBulkStatus("要約の作成が終わりました(成功 "+ok+"件 / 失敗・スキップ "+ng+"件)。"' +
+    '+"内容を確認・修正してから「この内容でまとめて書き込む」を押してください。");return;}' +
+    'const rec=list[i];i++;' +
+    'const date=document.getElementById("bdate-"+rec.id).value;' +
+    'if(!date){setBulkCardStatus(rec.id,"⏭ 実施日が未入力のためスキップしました。");ng++;next();return;}' +
+    'const sheetName=document.getElementById("bsheet-"+rec.id).value;' +
+    'const learner=document.getElementById("blearner-"+rec.id).value;' +
+    'setBulkStatus("AIが要約を作成中です... ("+i+"/"+list.length+") "+rec.name);' +
+    'setBulkCardStatus(rec.id,"要約を作成中...");' +
+    'google.script.run.withSuccessHandler(function(text){' +
+    'document.getElementById("btext-"+rec.id).value=text;' +
+    'setBulkCardStatus(rec.id,"✅ 要約の下書きを作成しました。内容を確認してください。");ok++;next();})' +
+    '.withFailureHandler(function(err){' +
+    'setBulkCardStatus(rec.id,"❌ 要約エラー: "+err.message);ng++;next();})' +
+    '.generateSummary({vttText:rec.text,date:date,isGroup:false,participants:[sheetName+":"+learner]});}' +
+    'next();}' +
+
+    'function submitBulk(){' +
+    'const entries=[];const skipped=[];' +
+    'bulkFiles.forEach(function(r){' +
+    'const sheetEl=document.getElementById("bsheet-"+r.id);if(!sheetEl)return;' +
+    'const sheetName=sheetEl.value;' +
+    'const learner=document.getElementById("blearner-"+r.id).value;' +
+    'const text=document.getElementById("btext-"+r.id).value;' +
+    'if(!text.trim()){skipped.push(r.name+"(記録内容が空)");return;}' +
+    'if(!sheetName||!learner){skipped.push(r.name+"(対象者が未選択)");return;}' +
+    'entries.push({sheetName:sheetName,learner:learner,text:text});});' +
+    'if(!entries.length){setBulkStatus(["書き込める行がありません。"].concat(' +
+    'skipped.map(function(s){return "⏭ "+s;})).join("\\n"));return;}' +
+    'setBulkStatus("書き込み中...("+entries.length+"件)");' +
+    'google.script.run.withSuccessHandler(function(results){' +
+    'const lines=results.map(function(r){' +
+    'return (r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "' +
+    '+(r.status==="written"?r.cell:r.error);});' +
+    'skipped.forEach(function(s){lines.push("⏭ スキップ: "+s);});' +
+    'setBulkStatus(lines.join("\\n"));})' +
+    '.withFailureHandler(function(err){setBulkStatus("書き込みエラー: "+err.message);})' +
+    '.submitEntries(entries);}' +
+
+    'document.getElementById("bulkVttFiles").addEventListener("change",function(ev){' +
+    'handleBulkFiles(ev.target.files);try{ev.target.value="";}catch(e){}});' +
+    '(function(){const dz=document.getElementById("bulkDropzone");' +
+    'dz.addEventListener("dragover",function(ev){ev.preventDefault();dz.classList.add("dragover");});' +
+    'dz.addEventListener("dragleave",function(){dz.classList.remove("dragover");});' +
+    'dz.addEventListener("drop",function(ev){ev.preventDefault();dz.classList.remove("dragover");' +
+    'handleBulkFiles(ev.dataTransfer.files);});})();' +
 
     'function saveLastParticipant_(sheetName,learner){' +
     'try{localStorage.setItem("learnerProgressLog.lastParticipant",JSON.stringify({sheetName:sheetName,learner:learner}));}catch(e){}}' +
