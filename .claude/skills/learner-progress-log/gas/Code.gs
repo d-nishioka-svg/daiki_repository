@@ -1665,3 +1665,42 @@ function testGemini() {
   var text = GeminiRaytech.generateText('こんにちは', GEMINI_MODEL_DEFAULT);
   Logger.log(text);
 }
+
+/**
+ * 権限調査用。エディタから実行し、実行ログの内容をそのまま共有すること。
+ *
+ * `ACCESS_TOKEN_SCOPE_INSUFFICIENT` (403) が出たときに、原因が
+ *   (A) このスクリプトのトークンに cloud-platform スコープが乗っていない
+ *   (B) スコープは乗っているが、組織側でVertex AIの利用が許可されていない
+ * のどちらなのかを切り分けるための関数。エラー文言だけでは区別がつかないため、
+ * Googleのtokeninfoエンドポイントに実際のトークンを問い合わせて、付与されている
+ * スコープ一覧を表示する。
+ *
+ * cloud-platform が「いいえ」なら(A)で、appsscript.jsonにoauthScopesを明示するか
+ * 承認をやり直す話になる。「はい」なら(B)で、AI推進室/情報システム部への確認が必要。
+ *
+ * 注意: アクセストークン自体はログに出さないこと(出力するのはスコープ名のみ)。
+ */
+function checkOAuthScopes() {
+  var res = UrlFetchApp.fetch(
+    'https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(ScriptApp.getOAuthToken()),
+    { muteHttpExceptions: true }
+  );
+  var info = {};
+  try {
+    info = JSON.parse(res.getContentText()) || {};
+  } catch (err) {
+    Logger.log('tokeninfoの応答を解釈できませんでした (HTTP ' + res.getResponseCode() + '): ' + res.getContentText());
+    return;
+  }
+
+  var scopes = String(info.scope || '').split(' ').filter(function (s) { return s; }).sort();
+  Logger.log('===== このスクリプトのトークンが持つスコープ (' + scopes.length + '件) =====');
+  for (var i = 0; i < scopes.length; i++) {
+    Logger.log('  ' + scopes[i]);
+  }
+  Logger.log('===== 判定 =====');
+  Logger.log('cloud-platform を含むか: ' +
+    (scopes.indexOf('https://www.googleapis.com/auth/cloud-platform') !== -1 ? 'はい' : 'いいえ'));
+  Logger.log('アカウント: ' + (info.email || '(userinfo.emailスコープが無いため取得できず)'));
+}
