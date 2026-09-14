@@ -126,7 +126,12 @@ export class PoodleAutomation {
   /**
    * フェーズ1 MVP: 日付・開始/終了時刻・実施状況（実施済み）・対応トレーナーを入力して保存する。
    * 出席者（複数人の場合も含め既存のチェック状態）・同席者・開催形式・Zoom情報・
-   * 備考・次回予定は自動入力しない（手動確認のまま）。
+   * 備考は自動入力しない（手動確認のまま）。
+   *
+   * 「次回予定」セクションは恒久的に対象外（このツールでは自動化不可能）。
+   * カレンダー予定はPOODLE登録時にPOODLEのZoom発行機能が自動生成するもので、
+   * 逆方向（カレンダーから次回日程を読み取ってPOODLEに書く）は成立しない
+   * ため。次回日程はトレーナー本人がその場で判断・入力する。
    */
   async registerConsultation(input: RegistrationInput): Promise<void> {
     const page = await this.openUnreportedConsultationsTab();
