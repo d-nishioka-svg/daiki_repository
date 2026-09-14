@@ -25,12 +25,24 @@
  *   - 各シートの1行目(ヘッダー行)、B列以降に受講者名が入っている(A列は使わない想定)
  *   - 各受講者列に、相談記録が上から下に積み上がっている
  *
+ * さらにその後、「次回の相談会日程を一覧で見たい・他ツール(POODLE自動登録等)からも
+ * 参照できるようにしたい」という要望を受けて、「次回日程一覧」管理シートと、
+ * 記録追加時に次回日程を構造化入力できるフィールドを追加した。次回の日程は
+ * 「【次回に向けて】」の自由記述の中に埋もれてしまい機械的に読み取れないため、
+ * 自由記述とは別に「次回実施日／開始／終了」を明示的に入力してもらい、保存時に
+ * 「次回日程一覧」シートへ自動反映(upsert)する。現時点では「1件ずつ」書き込み
+ * モードのみ対応(複数VTT一括モードは対象外、書き込み後に個別に追記可能)。
+ *
  * 使い方・導入手順は同じフォルダの DEPLOY.md を参照。
  */
 
 // 集団相談用のグループ定義を保存する管理シートの名前。
 // 企業(受講者)一覧には絶対に含めないこと(listStructure_側でも除外している)。
 var GROUP_SHEET_NAME = 'グループ設定';
+
+// 次回日程一覧を保存する管理シートの名前。
+// 企業(受講者)一覧には絶対に含めないこと(listStructure_側でも除外している)。
+var NEXT_SCHEDULE_SHEET_NAME = '次回日程一覧';
 
 // 要約に使うGeminiのモデルID。
 // GeminiRaytechはmodelIdを省略すると独自の既定モデルを使うが、それがこのプロジェクトで
@@ -74,7 +86,8 @@ function listStructure_(ss) {
   var out = [];
   for (var i = 0; i < sheets.length; i++) {
     var sh = sheets[i];
-    if (sh.getName() === GROUP_SHEET_NAME) continue; // グループ設定用の管理シートは除外
+    // グループ設定・次回日程一覧の管理シートは、企業(受講者)一覧には出さない
+    if (sh.getName() === GROUP_SHEET_NAME || sh.getName() === NEXT_SCHEDULE_SHEET_NAME) continue;
     var lastCol = sh.getLastColumn();
     if (lastCol < 2) continue; // B列以降がないシートは対象外
     var headers = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
@@ -99,7 +112,7 @@ function listStructure_(ss) {
 function createCompany(companyName) {
   companyName = String(companyName || '').trim();
   if (!companyName) throw new Error('企業名を入力してください。');
-  if (companyName === GROUP_SHEET_NAME) {
+  if (companyName === GROUP_SHEET_NAME || companyName === NEXT_SCHEDULE_SHEET_NAME) {
     throw new Error('この名前は管理用に予約されているため使用できません: ' + companyName);
   }
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -119,7 +132,7 @@ function getAllCompanyNames() {
   var names = [];
   for (var i = 0; i < sheets.length; i++) {
     var nm = sheets[i].getName();
-    if (nm === GROUP_SHEET_NAME) continue; // グループ設定用の管理シートは除外
+    if (nm === GROUP_SHEET_NAME || nm === NEXT_SCHEDULE_SHEET_NAME) continue; // 管理シートは除外
     names.push(nm);
   }
   return names;
@@ -170,8 +183,10 @@ function createLearnerOne_(ss, sheetName, learnerName) {
 // ===== 書き込み =====
 
 /**
- * entries: [{ sheetName, learner, text }, ...]
+ * entries: [{ sheetName, learner, text, nextDate, nextStart, nextEnd }, ...]
  * 集団相談の場合、ダイアログ側で同じ text を持つ行を複数追加して渡す。
+ * nextDate/nextStart/nextEnd は任意(次回日程がまだ未確定の場合は空でよい)。
+ * 指定があれば「次回日程一覧」シートにその受講者の次回予定としてupsertする。
  */
 function appendEntries_(ss, entries) {
   var results = [];
@@ -197,12 +212,27 @@ function appendEntries_(ss, entries) {
       cell.setWrap(true);
       cell.setVerticalAlignment('top');
 
-      results.push({
+      var result = {
         sheetName: entry.sheetName,
         learner: entry.learner,
         status: 'written',
         cell: cell.getA1Notation()
-      });
+      };
+
+      // 次回日程が入力されていれば「次回日程一覧」シートに反映する。
+      // ここが失敗しても、本体の記録書き込み自体は成功しているので status は変えない。
+      if (entry.nextDate) {
+        try {
+          var recordedDate = extractDate_(entry.text); // 本文冒頭の「📅 YYYY-MM-DD」を再利用
+          upsertNextSchedule_(ss, entry.sheetName, entry.learner, entry.nextDate, entry.nextStart, entry.nextEnd, recordedDate);
+          result.nextScheduleStatus = 'updated';
+        } catch (nsErr) {
+          result.nextScheduleStatus = 'error';
+          result.nextScheduleError = String(nsErr);
+        }
+      }
+
+      results.push(result);
     } catch (err) {
       results.push({ sheetName: entry.sheetName, learner: entry.learner, status: 'error', error: String(err) });
     }
@@ -231,6 +261,116 @@ function getLastUsedRow_(sheet, col) {
     }
   }
   return lastRow;
+}
+
+// ===== 次回日程一覧 =====
+//
+// 「次回日程一覧」という管理シートに、受講者1人につき1行(企業名+受講者名がキー)で
+// 次回予定を保持する。同じ受講者について新しい次回予定が入力されたら、その行を
+// 上書き(upsert)する。次回予定が確定していない状態に戻したい場合は、シートを
+// 直接編集して行を削除するか、日付欄を空にする。
+//
+// 列: 企業名 / 受講者 / 次回日付 / 開始 / 終了 / 記録日(今回の相談日) / 更新日時
+
+var NEXT_SCHEDULE_HEADERS = ['企業名', '受講者', '次回日付', '開始', '終了', '記録日(今回の相談日)', '更新日時'];
+
+function getNextScheduleSheet_(ss, createIfMissing) {
+  var sh = ss.getSheetByName(NEXT_SCHEDULE_SHEET_NAME);
+  if (!sh && createIfMissing) {
+    sh = ss.insertSheet(NEXT_SCHEDULE_SHEET_NAME);
+    sh.getRange(1, 1, 1, NEXT_SCHEDULE_HEADERS.length).setValues([NEXT_SCHEDULE_HEADERS]);
+    sh.getRange(1, 1, 1, NEXT_SCHEDULE_HEADERS.length).setFontWeight('bold');
+  }
+  return sh;
+}
+
+function findNextScheduleRow_(sh, sheetName, learner) {
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return -1;
+  var values = sh.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (var r = 0; r < values.length; r++) {
+    if (String(values[r][0]) === sheetName && String(values[r][1]) === learner) {
+      return r + 2; // シート上の実際の行番号(ヘッダー行+1オフセット)
+    }
+  }
+  return -1;
+}
+
+/**
+ * 次回日程を1件分upsertする(企業名+受講者名がキー)。
+ * nextDate は 'YYYY-MM-DD' 形式の文字列を想定。
+ */
+function upsertNextSchedule_(ss, sheetName, learner, nextDate, nextStart, nextEnd, recordedDate) {
+  var sh = getNextScheduleSheet_(ss, true);
+  var rowIndex = findNextScheduleRow_(sh, sheetName, learner);
+  var rowValues = [
+    sheetName,
+    learner,
+    nextDate,
+    nextStart || '',
+    nextEnd || '',
+    recordedDate || '',
+    Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm')
+  ];
+  if (rowIndex === -1) {
+    sh.getRange(sh.getLastRow() + 1, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sh.getRange(rowIndex, 1, 1, rowValues.length).setValues([rowValues]);
+  }
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。次回日程が登録されている受講者を、
+// 次回日付の昇順で一覧にして返す(他ツールからスプレッドシート経由で参照する場合は
+// 「次回日程一覧」シートを直接読めばよく、この関数はWebアプリ表示専用)。
+function getNextScheduleList() {
+  return getNextScheduleList_(SpreadsheetApp.getActiveSpreadsheet());
+}
+
+function getNextScheduleList_(ss) {
+  var sh = getNextScheduleSheet_(ss, false);
+  if (!sh) return [];
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return [];
+  var values = sh.getRange(2, 1, lastRow - 1, NEXT_SCHEDULE_HEADERS.length).getValues();
+  var tz = ss.getSpreadsheetTimeZone();
+  var out = [];
+  for (var r = 0; r < values.length; r++) {
+    var row = values[r];
+    if (!row[0] || !row[2]) continue; // 企業名または次回日付が空の行は無視
+    out.push({
+      sheetName: String(row[0]),
+      learner: String(row[1]),
+      nextDate: formatScheduleValue_(row[2], tz, 'yyyy-MM-dd'),
+      nextStart: formatScheduleValue_(row[3], tz, 'HH:mm'),
+      nextEnd: formatScheduleValue_(row[4], tz, 'HH:mm'),
+      recordedDate: formatScheduleValue_(row[5], tz, 'yyyy-MM-dd'),
+      updatedAt: formatScheduleValue_(row[6], tz, 'yyyy-MM-dd HH:mm')
+    });
+  }
+  out.sort(function (a, b) {
+    if (a.nextDate === b.nextDate) return 0;
+    return a.nextDate < b.nextDate ? -1 : 1;
+  });
+  return out;
+}
+
+/**
+ * 日付/時刻セルの値をシンプルな文字列に揃える。
+ *
+ * 'YYYY-MM-DD' や 'HH:mm' の文字列をsetValuesで書き込むとスプレッドシート側が日付/時刻値に
+ * 自動変換するため、読み戻すとDate型になる。時刻セルは1899-12-30が基準日として付いてくるので、
+ * 列ごとに出したい書式(pattern)を指定して整形する。
+ *
+ * タイムゾーンはスクリプト側ではなくスプレッドシートのものを使う。スクリプトのタイムゾーンを
+ * 取るサービスを呼ぶと必要スコープが変わり、権限の再承認が必要になる場合があるため
+ * (Webアプリからは承認ポップアップを出せないので「エディタでは動くがアプリでは落ちる」
+ * 状態になる)。スプレッドシートのスコープは元々使っているので追加の承認が要らない。
+ */
+function formatScheduleValue_(v, tz, pattern) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, tz, pattern);
+  }
+  return v ? String(v) : '';
 }
 
 // ===== 進捗確認(閲覧) =====
@@ -596,7 +736,7 @@ function estimateTargets(payload) {
 
   var valid = {};
   for (var i = 0; i < candidates.length; i++) {
-    valid[candidates[i].sheetName + ' ' + candidates[i].learner] = true;
+    valid[candidates[i].sheetName + '\u0000' + candidates[i].learner] = true;
   }
 
   var out = [];
@@ -606,7 +746,7 @@ function estimateTargets(payload) {
     if (!(no >= 1 && no <= files.length)) continue; // ファイル番号が不正なものは捨てる
     var sheetName = String(item.company || '');
     var learner = String(item.learner || '');
-    if (!valid[sheetName + ' ' + learner]) continue; // 候補に無い組み合わせは採用しない
+    if (!valid[sheetName + '\u0000' + learner]) continue; // 候補に無い組み合わせは採用しない
     out.push({ id: files[no - 1].id, sheetName: sheetName, learner: learner });
   }
   return out;
@@ -892,6 +1032,11 @@ function buildWebAppHtml_() {
     '<div class="pane-detail" id="memberDetail"></div>' +
     '</div>' +
     '<div id="companyMatrix"></div>' +
+    '<hr>' +
+    '<h3>次回日程一覧</h3>' +
+    '<p class="hint">「記録を追加」タブで次回相談予定日を入力した受講者について、全社横断で次回日付が早い順に一覧できます。</p>' +
+    '<button onclick="loadNextScheduleList()">次回日程一覧を見る(全社)</button>' +
+    '<div id="nextScheduleList"></div>' +
     '</div>' +
 
     '<div id="manageTab" style="display:none">' +
@@ -1204,7 +1349,13 @@ function buildWebAppHtml_() {
     '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
     '"<div class=\\"field\\"><label>受講者</label><select id=\\"learner-"+id+"\\"></select></div>"+' +
     '"</div>"+' +
-    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>";' +
+    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
+    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><input type=\\"date\\" id=\\"nextdate-"+id+"\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextstart-"+id+"\\" placeholder=\\"開始\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextend-"+id+"\\" placeholder=\\"終了\\"></div>"+' +
+    '"</div>";' +
     'document.getElementById("rows").appendChild(div);updateLearners(id);' +
     'if(!firstRowPrefillDone){firstRowPrefillDone=true;applyLastParticipant_(id);}}' +
 
@@ -1239,12 +1390,18 @@ function buildWebAppHtml_() {
     'const sheetName=document.getElementById("sheet-"+id).value;' +
     'const learner=document.getElementById("learner-"+id).value;' +
     'const text=document.getElementById("text-"+id).value;' +
-    'if(text.trim())entries.push({sheetName:sheetName,learner:learner,text:text});});' +
+    'const nextDate=document.getElementById("nextdate-"+id).value;' +
+    'const nextStart=document.getElementById("nextstart-"+id).value;' +
+    'const nextEnd=document.getElementById("nextend-"+id).value;' +
+    'if(text.trim())entries.push({sheetName:sheetName,learner:learner,text:text,nextDate:nextDate,nextStart:nextStart,nextEnd:nextEnd});});' +
     'if(entries.length===0){setStatus("記録内容が入力されていません。先に「AIで要約を作成」を押すか、直接入力してください。");return;}' +
     'setStatus("書き込み中...");' +
     'google.script.run.withSuccessHandler(function(results){' +
     'setStatus(results.map(function(r){' +
-    'return (r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "+(r.status==="written"?r.cell:r.error);' +
+    'let line=(r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "+(r.status==="written"?r.cell:r.error);' +
+    'if(r.nextScheduleStatus==="updated")line+="(次回日程も反映)";' +
+    'if(r.nextScheduleStatus==="error")line+="(次回日程の反映に失敗: "+r.nextScheduleError+")";' +
+    'return line;' +
     '}).join("\\n"));' +
     'if(entries.length===1&&results[0]&&results[0].status==="written"){' +
     'saveLastParticipant_(entries[0].sheetName,entries[0].learner);}' +
@@ -1269,6 +1426,25 @@ function buildWebAppHtml_() {
     'viewLoaded=true;onViewTargetChange();}' +
 
     'function setViewStatus(msg){document.getElementById("viewStatus").textContent=msg||"";}' +
+
+    'function loadNextScheduleList(){' +
+    'const el=document.getElementById("nextScheduleList");el.textContent="読み込み中...";' +
+    'google.script.run.withSuccessHandler(renderNextScheduleList)' +
+    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
+    '.getNextScheduleList();}' +
+
+    'function renderNextScheduleList(list){' +
+    'const el=document.getElementById("nextScheduleList");el.innerHTML="";' +
+    'if(!list||list.length===0){el.textContent="次回日程が登録されている受講者はいません。";return;}' +
+    'const todayStr=new Date().toISOString().slice(0,10);' +
+    'list.forEach(function(item){' +
+    'const card=document.createElement("div");card.className="card";' +
+    'const isPast=item.nextDate<todayStr;' +
+    'card.innerHTML="<b>"+esc(item.sheetName)+" / "+esc(item.learner)+"</b>"' +
+    '+"<span class=\\""+(isPast?"badge badge-alert":"badge")+"\\">"+esc(item.nextDate)' +
+    '+(item.nextStart?" "+esc(item.nextStart):"")+(item.nextEnd?"〜"+esc(item.nextEnd):"")+"</span>"' +
+    '+(isPast?"<span class=\\"badge badge-muted\\">日付経過(未更新の可能性)</span>":"");' +
+    'el.appendChild(card);});}' +
 
     'function setViewMode(m){viewMode=m;' +
     'document.getElementById("modebtn-cards").classList.toggle("active",m==="cards");' +
