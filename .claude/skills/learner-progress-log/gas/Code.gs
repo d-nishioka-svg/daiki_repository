@@ -668,6 +668,11 @@ function doGet(e) {
 /**
  * Webアプリ側のJavaScriptから呼ばれる。VTTの内容とフォーム入力からGeminiに要約させる。
  * payload: { vttText, date, isGroup, participants: ["企業名:受講者名", ...] }
+ *
+ * 戻り値: { text, next: { date, start, end } | null }
+ * 次回相談の日程は「【次回に向けて】」の自由記述に埋もれると機械的に読めないため、
+ * 同じ1回の呼び出しの中で、要約本文とは別に構造化して取り出させている(別途もう一度
+ * Geminiを呼ぶと、件数分の待ち時間が倍になるため)。
  */
 function generateSummary(payload) {
   var prompt = buildSummaryPrompt_(
@@ -676,7 +681,31 @@ function generateSummary(payload) {
     payload.isGroup,
     payload.participants || []
   );
-  return callGemini_(prompt);
+  return splitNextSchedule_(callGemini_(prompt));
+}
+
+/**
+ * モデルの出力から NEXT_SCHEDULE 行を取り出し、本文と次回日程に分ける。
+ * 行が無ければ next は null(次回日程が会話に出てこなかった場合)。
+ */
+function splitNextSchedule_(raw) {
+  var text = String(raw || '');
+  var m = /^[ \t]*NEXT_SCHEDULE[ \t]*:[ \t]*(\{[^\n]*\})[ \t]*$/m.exec(text);
+  if (!m) return { text: text.trim(), next: null };
+
+  var next = null;
+  try {
+    var parsed = JSON.parse(m[1]) || {};
+    // 日付・時刻の形式が想定どおりのものだけ採用する(HTMLのdate/time入力にそのまま入れるため)
+    var date = /^\d{4}-\d{2}-\d{2}$/.test(String(parsed.date || '')) ? String(parsed.date) : '';
+    var start = /^\d{2}:\d{2}$/.test(String(parsed.start || '')) ? String(parsed.start) : '';
+    var end = /^\d{2}:\d{2}$/.test(String(parsed.end || '')) ? String(parsed.end) : '';
+    if (date) next = { date: date, start: start, end: end };
+  } catch (err) {
+    next = null; // 壊れたJSONは黙って無視する(要約本文まで捨てたくない)
+  }
+
+  return { text: text.replace(m[0], '').trim(), next: next };
 }
 
 function buildSummaryPrompt_(vttText, date, isGroup, participants) {
@@ -707,6 +736,18 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
     '【備考】',
     remarksLine,
     '--- テンプレートここまで ---',
+    '',
+    '次に、会話の中で「次回の相談日」が具体的に決まっている場合にかぎり、上のテンプレートの',
+    '後ろに、次の形式の行を1行だけ追加してください。',
+    'NEXT_SCHEDULE: {"date":"YYYY-MM-DD","start":"HH:mm","end":"HH:mm"}',
+    '',
+    '- 今回の実施日は ' + date + ' です。「再来週の水曜」のような相対的な言い方は、この日付を',
+    '  基準に西暦の日付へ直すこと。',
+    '- 日付だけ決まっていて時刻が出ていない場合は、startとendを空文字("")にすること。',
+    '- 終了時刻が出ていない場合はendだけ空文字にすること。',
+    '- **次回日程が決まっていない、または会話から読み取れない場合は、この行自体を出力しない**こと。',
+    '  推測で日付を作らないこと。',
+    '- この行はテンプレートの外なので、【次回に向けて】の中には日程を書かなくてよい。',
     '',
     '--- 以下がVTT文字起こし ---',
     vttText
@@ -1096,8 +1137,50 @@ function buildWebAppHtml_() {
     'if(guessed){document.getElementById("sessionDate").value=guessed;' +
     'hintEl.textContent="ファイル名から実施日を "+guessed+" と推測しました。違う場合は修正してください。";' +
     '}else{hintEl.textContent="";}' +
-    'setStatus("VTT読み込み完了: "+f.name);};' +
+    'setStatus("VTT読み込み完了: "+f.name);' +
+    'autoSelectSingleTarget();};' +
     'reader.readAsText(f);}' +
+
+    'function singleRowIds(){return Array.prototype.map.call(' +
+    'document.querySelectorAll("#rows .row"),function(row){return row.id.split("-")[1];});}' +
+
+    'function applySingleGuess_(id,g,how){' +
+    'const sheetEl=document.getElementById("sheet-"+id);' +
+    'const learnerEl=document.getElementById("learner-"+id);' +
+    'if(!sheetEl||!learnerEl)return false;' +
+    'const prevSheet=sheetEl.value,prevLearner=learnerEl.value;' +
+    'sheetEl.value=g.sheetName;updateLearners(id);learnerEl.value=g.learner;' +
+    'if(learnerEl.value===g.learner){' +
+    'setStatus("対象者を "+g.sheetName+" / "+g.learner+" と"+how+"しました。違う場合はプルダウンで直してください。");' +
+    'return true;}' +
+    'sheetEl.value=prevSheet;updateLearners(id);learnerEl.value=prevLearner;return false;}' +
+
+    'function autoSelectSingleTarget(){' +
+    'const ids=singleRowIds();' +
+    'if(ids.length!==1)return;' +
+    'const id=ids[0];' +
+    'const parsed=parseVtt(vttText);' +
+    'const g=localGuess(parsed.speakers);' +
+    'if(g){applySingleGuess_(id,g,"話者名から自動選択");return;}' +
+    'const candidates=learnerCandidates();' +
+    'if(!candidates.length)return;' +
+    'setStatus("AIが対象者を推定中です...");' +
+    'google.script.run.withSuccessHandler(function(res){' +
+    'const hit=(res||[])[0];' +
+    'if(!hit||!applySingleGuess_(id,hit,"AIが推定")){' +
+    'setStatus("対象者を自動で判断できませんでした。プルダウンで選んでください。");}' +
+    '}).withFailureHandler(function(err){' +
+    'setStatus("対象者の推定でエラーが発生しました: "+err.message+"(プルダウンで選んでください)");})' +
+    '.estimateTargets({files:[{id:1,name:"vtt",speakers:parsed.speakers,excerpt:parsed.excerpt}],' +
+    'candidates:candidates});}' +
+
+    'function applyNextSchedule_(prefix,id,next){' +
+    'const dateEl=document.getElementById(prefix+"date-"+id);if(!dateEl)return false;' +
+    'if(!next||!next.date)return false;' +
+    'dateEl.value=next.date;' +
+    'document.getElementById(prefix+"start-"+id).value=next.start||"";' +
+    'document.getElementById(prefix+"end-"+id).value=next.end||"";' +
+    'return true;}' +
 
     'function guessDateFromFilename(name){' +
     'let m=/GMT(\\d{4})(\\d{2})(\\d{2})/.exec(name);' +
@@ -1194,6 +1277,12 @@ function buildWebAppHtml_() {
     '"</div>"+' +
     '"<label>記録内容</label><textarea id=\\"btext-"+id+"\\" ' +
     'placeholder=\\"「AIで要約をまとめて作成」を押すとここに下書きが入ります\\"></textarea>"+' +
+    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><input type=\\"date\\" id=\\"bnextdate-"+id+"\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"bnextstart-"+id+"\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"bnextend-"+id+"\\"></div>"+' +
+    '"</div>"+' +
     '"<div class=\\"bulk-cardstatus\\" id=\\"bstatus-"+id+"\\"></div>";' +
     'document.getElementById("bulkList").appendChild(div);' +
     'updateBulkLearners(id);' +
@@ -1276,16 +1365,18 @@ function buildWebAppHtml_() {
     'const learner=document.getElementById("blearner-"+rec.id).value;' +
     'setBulkStatus("AIが要約を作成中です... ("+i+"/"+list.length+") "+rec.name);' +
     'setBulkCardStatus(rec.id,"要約を作成中...");' +
-    'google.script.run.withSuccessHandler(function(text){' +
-    'document.getElementById("btext-"+rec.id).value=text;' +
-    'setBulkCardStatus(rec.id,"✅ 要約の下書きを作成しました。内容を確認してください。");ok++;next();})' +
+    'google.script.run.withSuccessHandler(function(res){' +
+    'document.getElementById("btext-"+rec.id).value=res.text;' +
+    'const hasNext=applyNextSchedule_("bnext",rec.id,res.next);' +
+    'setBulkCardStatus(rec.id,"✅ 要約の下書きを作成しました。内容を確認してください。"' +
+    '+(hasNext?"(次回相談予定日も会話から読み取りました)":""));ok++;next();})' +
     '.withFailureHandler(function(err){' +
     'setBulkCardStatus(rec.id,"❌ 要約エラー: "+err.message);ng++;next();})' +
     '.generateSummary({vttText:rec.text,date:date,isGroup:false,participants:[sheetName+":"+learner]});}' +
     'next();}' +
 
     'function submitBulk(){' +
-    'const entries=[];const skipped=[];' +
+    'const entries=[];const skipped=[];const entryRecIds=[];' +
     'bulkFiles.forEach(function(r){' +
     'const sheetEl=document.getElementById("bsheet-"+r.id);if(!sheetEl)return;' +
     'const sheetName=sheetEl.value;' +
@@ -1293,15 +1384,25 @@ function buildWebAppHtml_() {
     'const text=document.getElementById("btext-"+r.id).value;' +
     'if(!text.trim()){skipped.push(r.name+"(記録内容が空)");return;}' +
     'if(!sheetName||!learner){skipped.push(r.name+"(対象者が未選択)");return;}' +
-    'entries.push({sheetName:sheetName,learner:learner,text:text});});' +
+    'entries.push({sheetName:sheetName,learner:learner,text:text,' +
+    'nextDate:document.getElementById("bnextdate-"+r.id).value,' +
+    'nextStart:document.getElementById("bnextstart-"+r.id).value,' +
+    'nextEnd:document.getElementById("bnextend-"+r.id).value});' +
+    'entryRecIds.push(r.id);});' +
     'if(!entries.length){setBulkStatus(["書き込める行がありません。"].concat(' +
     'skipped.map(function(s){return "⏭ "+s;})).join("\\n"));return;}' +
     'setBulkStatus("書き込み中...("+entries.length+"件)");' +
     'google.script.run.withSuccessHandler(function(results){' +
     'const lines=results.map(function(r){' +
-    'return (r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "' +
-    '+(r.status==="written"?r.cell:r.error);});' +
+    'let line=(r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "' +
+    '+(r.status==="written"?r.cell:r.error);' +
+    'if(r.nextScheduleStatus==="updated")line+="(次回日程も反映)";' +
+    'if(r.nextScheduleStatus==="error")line+="(次回日程の反映に失敗: "+r.nextScheduleError+")";' +
+    'return line;});' +
     'skipped.forEach(function(s){lines.push("⏭ スキップ: "+s);});' +
+    'let removed=0;' +
+    'results.forEach(function(r,i){if(r.status!=="written")return;removeBulk(entryRecIds[i]);removed++;});' +
+    'if(removed)lines.push("書き込みが終わった"+removed+"件のカードは消しました。");' +
     'setBulkStatus(lines.join("\\n"));})' +
     '.withFailureHandler(function(err){setBulkStatus("書き込みエラー: "+err.message);})' +
     '.submitEntries(entries);}' +
@@ -1379,13 +1480,17 @@ function buildWebAppHtml_() {
     'const learner=document.getElementById("learner-"+id).value;' +
     'participants.push(sheetName+":"+learner);});' +
     'setStatus("AIが要約を作成中です...(数十秒かかることがあります)");' +
-    'google.script.run.withSuccessHandler(function(text){' +
-    'rows.forEach(function(row){const id=row.id.split("-")[1];document.getElementById("text-"+id).value=text;});' +
-    'setStatus("要約案を作成しました。内容を確認・修正してから書き込んでください。");' +
+    'google.script.run.withSuccessHandler(function(res){' +
+    'let filled=0;' +
+    'rows.forEach(function(row){const id=row.id.split("-")[1];' +
+    'document.getElementById("text-"+id).value=res.text;' +
+    'if(applyNextSchedule_("next",id,res.next))filled++;});' +
+    'setStatus("要約案を作成しました。内容を確認・修正してから書き込んでください。"' +
+    '+(filled?"　次回相談予定日も会話から読み取って入れました(要確認)。":""));' +
     '}).withFailureHandler(function(err){setStatus("要約エラー: "+err.message);})' +
     '.generateSummary({vttText:vttText,date:date,isGroup:isGroup,participants:participants});}' +
 
-    'function submitAll(){const rows=document.querySelectorAll("#rows .row");const entries=[];' +
+    'function submitAll(){const rows=document.querySelectorAll("#rows .row");const entries=[];const entryRowIds=[];' +
     'rows.forEach(function(row){const id=row.id.split("-")[1];' +
     'const sheetName=document.getElementById("sheet-"+id).value;' +
     'const learner=document.getElementById("learner-"+id).value;' +
@@ -1393,18 +1498,27 @@ function buildWebAppHtml_() {
     'const nextDate=document.getElementById("nextdate-"+id).value;' +
     'const nextStart=document.getElementById("nextstart-"+id).value;' +
     'const nextEnd=document.getElementById("nextend-"+id).value;' +
-    'if(text.trim())entries.push({sheetName:sheetName,learner:learner,text:text,nextDate:nextDate,nextStart:nextStart,nextEnd:nextEnd});});' +
+    'if(text.trim()){' +
+    'entries.push({sheetName:sheetName,learner:learner,text:text,nextDate:nextDate,nextStart:nextStart,nextEnd:nextEnd});' +
+    'entryRowIds.push(id);}});' +
     'if(entries.length===0){setStatus("記録内容が入力されていません。先に「AIで要約を作成」を押すか、直接入力してください。");return;}' +
     'setStatus("書き込み中...");' +
     'google.script.run.withSuccessHandler(function(results){' +
-    'setStatus(results.map(function(r){' +
+    'const lines=results.map(function(r){' +
     'let line=(r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "+(r.status==="written"?r.cell:r.error);' +
     'if(r.nextScheduleStatus==="updated")line+="(次回日程も反映)";' +
     'if(r.nextScheduleStatus==="error")line+="(次回日程の反映に失敗: "+r.nextScheduleError+")";' +
-    'return line;' +
-    '}).join("\\n"));' +
+    'return line;});' +
     'if(entries.length===1&&results[0]&&results[0].status==="written"){' +
     'saveLastParticipant_(entries[0].sheetName,entries[0].learner);}' +
+    'let removed=0;' +
+    'results.forEach(function(r,i){' +
+    'if(r.status!=="written")return;' +
+    'removeRow(entryRowIds[i]);removed++;});' +
+    'if(!document.querySelectorAll("#rows .row").length){' +
+    'firstRowPrefillDone=true;addRow();}' +
+    'if(removed)lines.push("書き込みが終わった"+removed+"人分の入力欄は消しました。");' +
+    'setStatus(lines.join("\\n"));' +
     '}).withFailureHandler(function(err){setStatus("書き込みエラー: "+err.message);})' +
     '.submitEntries(entries);}' +
 
