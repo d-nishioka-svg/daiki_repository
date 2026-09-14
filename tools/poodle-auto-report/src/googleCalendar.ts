@@ -21,11 +21,18 @@ export interface ConsultationEvent {
   attendeeNames: string[];
   /**
    * カレンダー予定の説明欄に含まれる「企業情報」リンク(tsr.race.co.jp/pdf.php?id=NNN)
-   * から抽出したTSR企業ID。POODLE側もTSRコードに紐づいた正式企業名を使っている
-   * ため、企業名のあいまい一致より優先してこちらでの検索・突合を試すべき。
-   * 抽出できなかった場合は null（その場合のみ企業名でのマッチングにフォールバック）。
+   * から抽出したID。
+   *
+   * ⚠️ 実画面で確認した結果、これは tsr.race.co.jp というページの内部ID
+   * （DBの行番号的なもの）であり、POODLE案件一覧の「TSRコード」列の値
+   * （例: 570514894）とは別物と判明した。そのままではPOODLE側のTSRコード検索
+   * には使えない。
+   * （tsr.race.co.jp/pdf.php?id=X のページ内「企業コード」欄をスクレイピングすれば
+   * 真のTSRコードは取得できるが、認証要否や安定性が未確認のため現時点では未使用。
+   * 企業名の完全一致検索で十分なことが確認できたため、当面このフィールドは
+   * 使わない。将来的な参考情報として保持のみ。）
    */
-  tsrId: string | null;
+  tsrPageId: string | null;
   startTime: Date;
   endTime: Date;
   rawSummary: string;
@@ -54,11 +61,12 @@ export function parseConsultationEventTitle(
   return { companyNameRaw, attendeeNames };
 }
 
-const TSR_ID_RE = /tsr\.race\.co\.jp\/pdf\.php\?id=(\d+)/u;
+const TSR_PAGE_ID_RE = /tsr\.race\.co\.jp\/pdf\.php\?id=(\d+)/u;
 
-export function extractTsrId(description: string | null | undefined): string | null {
+/** tsr.race.co.jp のページ内部IDを抽出する（POODLEのTSRコードとは別物。上記コメント参照） */
+export function extractTsrPageId(description: string | null | undefined): string | null {
   if (!description) return null;
-  const match = TSR_ID_RE.exec(description);
+  const match = TSR_PAGE_ID_RE.exec(description);
   return match ? match[1] : null;
 }
 
@@ -103,7 +111,7 @@ export async function fetchConsultationEvents(
       eventId: event.id ?? "",
       companyNameRaw: parsed.companyNameRaw,
       attendeeNames: parsed.attendeeNames,
-      tsrId: extractTsrId(event.description),
+      tsrPageId: extractTsrPageId(event.description),
       startTime: new Date(event.start.dateTime),
       endTime: new Date(event.end.dateTime),
       rawSummary: event.summary,

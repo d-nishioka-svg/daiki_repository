@@ -44,20 +44,35 @@ export class PoodleAutomation {
   }
 
   /**
-   * 企業名でPOODLEの案件を検索し、リスキリング契約詳細ページへ遷移する。
-   * 【要確認】TSRコード検索 vs 企業名検索のどちらを使うか、検索結果が複数
-   * ヒットした場合の絞り込み方法。
+   * 企業名でPOODLEの案件一覧を検索し、リスキリング契約詳細ページへ遷移する。
+   *
+   * 実画面確認済み: `/home` からデフォルトで表示される「案件一覧」画面に、
+   * 契約開始日(範囲)・契約終了日(範囲)・TSRコード・**企業名**（テキスト入力）・
+   * 契約状況（プルダウン）・DR（プルダウン）のフィルタと「検索」ボタンがある。
+   * 検索結果テーブルの「企業名」列がリンクになっており、クリックすると
+   * リスキリング契約詳細ページに遷移する。
+   *
+   * 企業名は完全一致で問題ない（company-mapping解決後の名前をそのまま入力する
+   * 想定。src/companyMatching.ts の実データ検証コメント参照）。
+   *
+   * 【要確認・未確定】各入力欄・ボタン・結果リンクの実際のセレクタ
+   * （data-testid の有無、id/class名など）。Playwright codegen で記録すること:
+   *   npx playwright codegen --save-storage=secrets/poodle-storage-state.json \
+   *     https://poodle.race.co.jp/home
    */
   private async navigateToCompanyDetail(companyName: string): Promise<void> {
     if (!this.context) throw new Error("open() を先に呼び出してください");
     const page = await this.context.newPage();
-    await page.goto(this.config.poodle.baseUrl);
+    await page.goto(`${this.config.poodle.baseUrl}/home`);
 
-    // TODO(要確認): 実際の案件検索UIのセレクタに置き換える
-    // await page.fill('[data-testid="company-search-input"]', companyName);
-    // await page.click('[data-testid="company-search-submit"]');
-    // const resultLink = page.getByRole("link", { name: companyName });
-    // await resultLink.click();
+    // TODO(要確認): 実際の「企業名」入力欄・検索ボタン・結果リンクのセレクタに置き換える
+    // await page.fill('input[name="companyName"]', companyName); // 案件一覧の「企業名」欄
+    // await page.click('button:has-text("検索")');
+    // const resultLink = page.getByRole("link", { name: companyName, exact: true });
+    // if ((await resultLink.count()) === 0) {
+    //   throw new PoodleCompanyNotFoundError(`企業名 "${companyName}" がPOODLE案件一覧でヒットしませんでした。`);
+    // }
+    // await resultLink.first().click();
 
     throw new PoodleModalElementNotFoundError(
       `未実装: navigateToCompanyDetail("${companyName}") のセレクタが未確定です。` +
