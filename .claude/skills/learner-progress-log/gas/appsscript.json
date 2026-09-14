@@ -1,0 +1,18 @@
+{
+  "timeZone": "Asia/Tokyo",
+  "dependencies": {
+    "libraries": [
+      {
+        "userSymbol": "GeminiRaytech",
+        "version": "2",
+        "libraryId": "1SNn6G_ri9HwMu1jLLoA7ChZVVlS4Vk_LYwUNIWhvBvpYenikR1LrWKcW"
+      }
+    ]
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "webapp": {
+    "executeAs": "USER_DEPLOYING",
+    "access": "DOMAIN"
+  }
+}

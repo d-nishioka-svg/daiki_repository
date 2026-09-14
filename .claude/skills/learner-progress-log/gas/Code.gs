@@ -20,17 +20,18 @@
  *   (UrlFetchAppはGoogle側のインフラで実行されるため、Claude Code実行環境の
  *   ネットワーク制限を受けない)。
  *
- *   さらにその後、「次回の相談会日程を一覧で見たい・他ツール(POODLE自動登録等)からも
- *   参照できるようにしたい」という要望を受けて、「次回日程一覧」管理シートと、
- *   記録追加時に次回日程を構造化入力できるフィールドを追加した(本ファイルでの変更)。
- *   次回の日程は「【次回に向けて】」の自由記述の中に埋もれてしまい機械的に読み取れない
- *   ため、自由記述とは別に「次回実施日／開始／終了」を明示的に入力してもらい、
- *   保存時に「次回日程一覧」シートへ自動反映(upsert)する。
- *
  * 前提とするシート構造:
  *   - 1つのスプレッドシートの中に、企業ごとのシート(タブ)がある
  *   - 各シートの1行目(ヘッダー行)、B列以降に受講者名が入っている(A列は使わない想定)
  *   - 各受講者列に、相談記録が上から下に積み上がっている
+ *
+ * さらにその後、「次回の相談会日程を一覧で見たい・他ツール(POODLE自動登録等)からも
+ * 参照できるようにしたい」という要望を受けて、「次回日程一覧」管理シートと、
+ * 記録追加時に次回日程を構造化入力できるフィールドを追加した。次回の日程は
+ * 「【次回に向けて】」の自由記述の中に埋もれてしまい機械的に読み取れないため、
+ * 自由記述とは別に「次回実施日／開始／終了」を明示的に入力してもらい、保存時に
+ * 「次回日程一覧」シートへ自動反映(upsert)する。現時点では「1件ずつ」書き込み
+ * モードのみ対応(複数VTT一括モードは対象外、書き込み後に個別に追記可能)。
  *
  * 使い方・導入手順は同じフォルダの DEPLOY.md を参照。
  */
@@ -42,6 +43,15 @@ var GROUP_SHEET_NAME = 'グループ設定';
 // 次回日程一覧を保存する管理シートの名前。
 // 企業(受講者)一覧には絶対に含めないこと(listStructure_側でも除外している)。
 var NEXT_SCHEDULE_SHEET_NAME = '次回日程一覧';
+
+// 要約に使うGeminiのモデルID。
+// GeminiRaytechはmodelIdを省略すると独自の既定モデルを使うが、それがこのプロジェクトで
+// 有効化されているとは限らず、404 (Publisher model ... was not found) になる。実際に
+// gemini-2.0-flash が使われて失敗したため、動作確認済みのモデルをコード側で明示する。
+// 別のモデルに変えたい場合は、スクリプトプロパティ GEMINI_MODEL に設定すればそちらが優先される。
+// 有効なモデルIDは https://cloud.google.com/vertex-ai/generative-ai/docs/models の
+// 「Model ID」欄で確認すること。
+var GEMINI_MODEL_DEFAULT = 'gemini-3.6-flash';
 
 // ===== メニュー =====
 
@@ -113,11 +123,51 @@ function createCompany(companyName) {
   return { sheetName: companyName };
 }
 
-// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)を追加する。
+// Webアプリ側のJavaScriptから呼ばれる。受講者の有無に関わらず、全企業(シート)名を返す。
+// (listStructure_は受講者0人のシートを一覧から除外するため、企業登録直後や受講者が
+// まだ0人のシートを「受講者を登録」用のプルダウンに出すには、こちらを使う必要がある)
+function getAllCompanyNames() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  var names = [];
+  for (var i = 0; i < sheets.length; i++) {
+    var nm = sheets[i].getName();
+    if (nm === GROUP_SHEET_NAME || nm === NEXT_SCHEDULE_SHEET_NAME) continue; // 管理シートは除外
+    names.push(nm);
+  }
+  return names;
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)を1人追加する。
 function createLearner(sheetName, learnerName) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  createLearnerOne_(ss, sheetName, learnerName);
+  return listStructure_(ss);
+}
+
+// Webアプリ側のJavaScriptから呼ばれる。既存の企業(シート)に受講者(列)をまとめて追加する。
+// 1人ずつ処理し、同名重複などで一部が失敗しても他の登録は続行する。
+// learnerNames: string[]
+function createLearners(sheetName, learnerNames) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var results = [];
+  for (var i = 0; i < learnerNames.length; i++) {
+    var name = String(learnerNames[i] || '').trim();
+    if (!name) continue;
+    try {
+      createLearnerOne_(ss, sheetName, name);
+      results.push({ learner: name, status: 'created' });
+    } catch (err) {
+      results.push({ learner: name, status: 'error', error: String((err && err.message) || err) });
+    }
+  }
+  return { results: results, structure: listStructure_(ss) };
+}
+
+// createLearner / createLearners の共通処理。実際にシートへ列を1つ追加する。
+function createLearnerOne_(ss, sheetName, learnerName) {
   learnerName = String(learnerName || '').trim();
   if (!learnerName) throw new Error('受講者名を入力してください。');
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(sheetName);
   if (!sh) throw new Error('シートが見つかりません: ' + sheetName);
   if (findLearnerColumn_(sh, learnerName) !== -1) {
@@ -128,7 +178,6 @@ function createLearner(sheetName, learnerName) {
   var cell = sh.getRange(1, targetCol);
   cell.setValue(learnerName);
   cell.setFontWeight('bold');
-  return listStructure_(ss);
 }
 
 // ===== 書き込み =====
@@ -193,6 +242,7 @@ function appendEntries_(ss, entries) {
 
 function findLearnerColumn_(sheet, learnerName) {
   var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return -1; // 受講者が1人もいない(=列が無い)シートは対象外
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   for (var c = 0; c < headers.length; c++) {
     if (String(headers[c]) === learnerName) return c + 1;
@@ -306,7 +356,6 @@ function getNextScheduleList_(ss) {
 // 日付/時刻セルの値をシンプルな文字列に揃える(入力方法によってDate型・文字列型が混在するため)。
 function formatScheduleValue_(v) {
   if (v instanceof Date) {
-    // 日付・時刻どちらもDate型になり得るので、両方埋め込んでおき、表示側で必要な部分を使う
     return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
   }
   return v ? String(v) : '';
@@ -653,6 +702,98 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
 }
 
 /**
+ * Webアプリ側のJavaScriptから呼ばれる。複数のVTTについて、それぞれが「どの企業のどの受講者との
+ * 相談会か」をまとめてGeminiに推定させる(個別相談のVTTを一括登録するとき用)。
+ *
+ * VTT全文ではなく、Zoomの話者表示名と冒頭の抜粋だけを送る(全文を件数分送ると時間もトークンも
+ * かかりすぎるため)。またWebアプリ側で先に登録済み受講者名との単純な文字列照合をしているので、
+ * ここに渡ってくるのは基本的に照合できなかったファイルだけになる。
+ *
+ * 推定はあくまで下書きで、書き込む前にユーザーが画面のプルダウンで確認・修正する前提。
+ * 誤書き込みを防ぐため、候補リストに無い組み合わせをモデルが返してきた場合は採用しない。
+ *
+ * payload: { files: [{ id, name, speakers: [...], excerpt }], candidates: [{ sheetName, learner }] }
+ * 戻り値: [{ id, sheetName, learner }] (判断できなかったファイルは含まれない)
+ */
+function estimateTargets(payload) {
+  var files = (payload && payload.files) || [];
+  var candidates = (payload && payload.candidates) || [];
+  if (files.length === 0 || candidates.length === 0) return [];
+
+  var parsed = parseJsonArray_(callGemini_(buildEstimatePrompt_(files, candidates)));
+
+  var valid = {};
+  for (var i = 0; i < candidates.length; i++) {
+    valid[candidates[i].sheetName + ' ' + candidates[i].learner] = true;
+  }
+
+  var out = [];
+  for (var j = 0; j < parsed.length; j++) {
+    var item = parsed[j] || {};
+    var no = Number(item.file);
+    if (!(no >= 1 && no <= files.length)) continue; // ファイル番号が不正なものは捨てる
+    var sheetName = String(item.company || '');
+    var learner = String(item.learner || '');
+    if (!valid[sheetName + ' ' + learner]) continue; // 候補に無い組み合わせは採用しない
+    out.push({ id: files[no - 1].id, sheetName: sheetName, learner: learner });
+  }
+  return out;
+}
+
+function buildEstimatePrompt_(files, candidates) {
+  var lines = [
+    'あなたは、企業向けITスキル研修(リスキリング支援サービス)の運営担当者です。',
+    'Zoom個別相談会の文字起こし(VTT)が複数あります。それぞれが「どの企業のどの受講者との',
+    '相談会か」を、下の候補リストの中から選んでください。',
+    '',
+    '# 候補リスト(この中の組み合わせからのみ選ぶこと)'
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    lines.push('- 企業: ' + candidates[i].sheetName + ' / 受講者: ' + candidates[i].learner);
+  }
+  lines.push('');
+  lines.push('# 判定対象のファイル');
+  for (var j = 0; j < files.length; j++) {
+    var f = files[j] || {};
+    var speakers = f.speakers || [];
+    lines.push('[' + (j + 1) + '] ファイル名: ' + String(f.name || ''));
+    lines.push('    Zoomの話者表示名: ' + (speakers.length ? speakers.join('、') : '(取得できず)'));
+    lines.push('    冒頭の抜粋: ' + String(f.excerpt || '').replace(/\n/g, ' / '));
+  }
+  lines.push('');
+  lines.push('# 出力形式');
+  lines.push('次の形式のJSON配列だけを出力してください。前置き・説明文・Markdownのコードブロックは');
+  lines.push('一切付けないこと。');
+  lines.push('[{"file":1,"company":"候補リストの企業名","learner":"候補リストの受講者名"}]');
+  lines.push('');
+  lines.push('- file は上の [] 内の番号。');
+  lines.push('- company と learner は、必ず候補リストにある組み合わせを、そのままの表記で書くこと。');
+  lines.push('- 話者表示名がローマ字・ニックネーム・端末名などで候補と一致しない場合は、');
+  lines.push('  会話の内容(自己紹介・呼びかけ・所属企業の話題など)から判断すること。');
+  lines.push('- 相談会の進行役(運営担当者)は受講者ではないので選ばないこと。');
+  lines.push('- どの候補か判断できないファイルは、配列に含めないこと(推測で埋めないこと)。');
+  return lines.join('\n');
+}
+
+/**
+ * モデルの応答からJSON配列を取り出す。「JSONだけを出力せよ」と指示しても、前置きや
+ * Markdownのコードブロックが付いてくることがあるため、最初の[から最後の]までを切り出す。
+ * 取り出せなかった場合は空配列を返す(推定は必須機能ではなく、失敗しても手動で選べばよい)。
+ */
+function parseJsonArray_(text) {
+  var s = String(text || '');
+  var start = s.indexOf('[');
+  var end = s.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return [];
+  try {
+    var v = JSON.parse(s.slice(start, end + 1));
+    return Object.prototype.toString.call(v) === '[object Array]' ? v : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+/**
  * Gemini APIを呼び出して要約テキストを取得する。
  *
  * 個人のGemini APIキーを直接使う方式(旧実装)は廃止した。社内のAI推進室が用意した
@@ -669,7 +810,7 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
  *      承認ポップアップが出せないため、必ずエディタから先に一度実行しておくこと)
  */
 function callGemini_(prompt) {
-  var model = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || undefined; // 未設定ならライブラリの既定(gemini-2.5-flash)
+  var model = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || GEMINI_MODEL_DEFAULT;
   var text;
   try {
     text = GeminiRaytech.generateText(prompt, model);
@@ -691,61 +832,100 @@ function callGemini_(prompt) {
  * (詳細は gas/DEPLOY.md 「初回実行時の注意点」を参照)
  */
 function testGeminiRaytech_() {
-  var text = GeminiRaytech.generateText('こんにちは');
+  var text = GeminiRaytech.generateText('こんにちは', GEMINI_MODEL_DEFAULT);
   Logger.log(text);
 }
 
 function buildWebAppHtml_() {
   return '<!DOCTYPE html><html><head><base target="_top">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap">' +
     '<style>' +
-    ':root{--sf-blue:#0176d3;--sf-blue-dark:#014486;--sf-navy:#16325c;--sf-text:#3e3e3c;' +
-    '--sf-muted:#706e6b;--sf-border:#dddbda;--sf-bg:#f3f2f2;--sf-danger:#ba0517;--sf-input-border:#c9c7c5;}' +
+    ':root{--sf-accent:#c8364a;--sf-accent-dark:#9f1239;--sf-navy:#0f1e3d;--sf-text:#0f1e3d;' +
+    '--sf-muted:#64748b;--sf-border:#e2e8f0;--sf-bg:#f8fafc;--sf-danger:#9f1239;--sf-input-border:#e2e8f0;' +
+    '--sf-header-grad:linear-gradient(90deg,#0f1e3d,#172a4a);' +
+    '--sf-primary-grad:linear-gradient(135deg,#dc2626,#9f1239);' +
+    '--sf-primary-grad-hover:linear-gradient(135deg,#b91c1c,#881337);' +
+    '--sf-num-font:"Outfit","Noto Sans JP",sans-serif;}' +
     '*{box-sizing:border-box;}' +
     'body{margin:0;background:var(--sf-bg);color:var(--sf-text);' +
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;font-size:15px;}' +
-    '.sf-header{background:var(--sf-navy);color:#fff;padding:16px 24px;font-size:17px;font-weight:700;' +
+    'font-family:"Noto Sans JP","Hiragino Sans",sans-serif;font-size:15px;}' +
+    '.sf-header{background:var(--sf-header-grad);color:#fff;padding:16px 24px;font-size:17px;font-weight:700;' +
     'display:flex;align-items:center;gap:8px;}' +
-    '.sf-dot{width:9px;height:9px;border-radius:50%;background:var(--sf-blue);display:inline-block;flex:none;}' +
-    '.sf-container{max-width:860px;margin:24px auto;padding:0 20px 48px;transition:max-width .15s;}' +
-    '.sf-container.wide{max-width:1360px;}' +
+    '.sf-dot{width:9px;height:9px;border-radius:50%;background:var(--sf-accent);display:inline-block;flex:none;}' +
+'.sf-container{max-width:1360px;margin:24px auto;padding:0 20px 48px;}' +
     '.sf-card{background:#fff;border:1px solid var(--sf-border);border-radius:8px;' +
-    'box-shadow:0 1px 3px rgba(0,0,0,.08);padding:28px 32px 32px;}' +
+    'box-shadow:0 1px 3px rgba(15,30,61,.08);padding:28px 32px 32px;}' +
+    '.field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:4px 24px;max-width:900px;}' +
+    '.field-grid .field{margin-bottom:18px;}' +
+    '.field-narrow{max-width:640px;}' +
+    '.dropzone{border:2px dashed var(--sf-input-border);border-radius:8px;padding:20px;' +
+    'text-align:center;background:var(--sf-bg);transition:.15s;}' +
+    '.dropzone.dragover{border-color:var(--sf-accent);background:#fff1f2;}' +
+    '.dropzone input[type=file]{display:block;margin:0 auto 8px;max-width:360px;}' +
+    '.dropzone-hint{font-size:12.5px;color:var(--sf-muted);}' +
+    '.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-top:14px;}' +
+    '.card-grid .card{margin-bottom:0;}' +
+    '.bulk-file{font-weight:700;color:var(--sf-navy);font-size:14px;margin-bottom:14px;' +
+    'padding-right:76px;word-break:break-all;}' +
+    '.bulk-cardstatus{margin-top:10px;font-size:12.5px;color:var(--sf-muted);white-space:pre-wrap;}' +
+    '#bulkStatus{margin-top:16px;white-space:pre-wrap;font-size:13.5px;color:var(--sf-text);}' +
+    '.view-toolbar{display:flex;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-bottom:16px;}' +
+    '.view-toolbar .field{margin-bottom:0;min-width:280px;}' +
+    '.viewmode{display:inline-flex;border:1px solid var(--sf-border);border-radius:6px;overflow:hidden;}' +
+    '#writeModeWrap{margin:6px 0 22px;}' +
+    '.modebtn{margin:0;border:none;border-radius:0;background:#fff;color:var(--sf-muted);padding:9px 18px;}' +
+    '.modebtn:hover{background:var(--sf-bg);}' +
+    '.modebtn.active,.modebtn.active:hover{background:var(--sf-accent);color:#fff;}' +
+    '.panes{display:grid;grid-template-columns:320px 1fr;gap:20px;align-items:start;}' +
+    '.pane-list{border:1px solid var(--sf-border);border-radius:8px;background:#fff;overflow:hidden;}' +
+    '.member{padding:12px 14px;border-bottom:1px solid var(--sf-border);cursor:pointer;transition:.1s;}' +
+    '.member:last-child{border-bottom:none;}' +
+    '.member:hover{background:var(--sf-bg);}' +
+    '.member.active{background:#fff1f2;box-shadow:inset 3px 0 0 var(--sf-accent);}' +
+    '.member-name{font-weight:700;color:var(--sf-navy);font-size:14px;}' +
+    '.member-sub{font-size:11.5px;color:var(--sf-muted);margin-top:2px;}' +
+    '.member-meta{font-size:12px;color:var(--sf-muted);margin-top:3px;' +
+    'font-family:var(--sf-num-font);font-variant-numeric:tabular-nums;}' +
+    '.pane-empty{padding:16px;color:var(--sf-muted);font-size:13px;}' +
+    '.detail-head{font-weight:700;color:var(--sf-navy);font-size:16px;margin-bottom:12px;}' +
+    '.detail-head .badge{margin-left:8px;}' +
+    '@media(max-width:900px){.panes{grid-template-columns:1fr;}}' +
     'h2{margin:0 0 4px;font-size:19px;font-weight:700;color:var(--sf-navy);}' +
     'h3{margin:0 0 4px;font-size:15.5px;font-weight:700;color:var(--sf-navy);}' +
     '.hint{font-size:13px;color:var(--sf-muted);line-height:1.6;margin:0 0 18px;}' +
     '.field{margin-bottom:18px;}' +
     'label{display:block;font-weight:600;font-size:13.5px;color:var(--sf-text);margin-bottom:6px;}' +
-    'input[type=file],input[type=date],input[type=time],input[type=text],select,textarea{width:100%;font-family:inherit;font-size:15px;' +
-    'color:var(--sf-text);border:1px solid var(--sf-input-border);border-radius:4px;padding:9px 12px;background:#fff;}' +
+    'input[type=file],input[type=date],input[type=text],select,textarea{width:100%;font-family:inherit;font-size:15px;' +
+    'color:var(--sf-text);border:1px solid var(--sf-input-border);border-radius:6px;padding:9px 12px;background:#fff;}' +
     'input[type=file]{padding:6px;}' +
-    'select:focus,input:focus,textarea:focus{outline:none;border-color:var(--sf-blue);box-shadow:0 0 0 1px var(--sf-blue);}' +
-    '.row{border:1px solid var(--sf-border);background:#fafaf9;border-radius:8px;padding:16px;margin-bottom:16px;position:relative;}' +
+    'select:focus,input:focus,textarea:focus{outline:none;border-color:var(--sf-accent);box-shadow:0 0 0 1px var(--sf-accent);}' +
+    '.row{border:1px solid var(--sf-border);background:var(--sf-bg);border-radius:8px;padding:16px;margin-bottom:16px;position:relative;}' +
     '.row textarea{height:160px;margin-top:0;}' +
-    '.next-schedule-fields{display:flex;gap:10px;}' +
-    '.next-schedule-fields .field{flex:1;margin-bottom:14px;}' +
     '.remove{position:absolute;top:14px;right:16px;color:var(--sf-danger);cursor:pointer;font-size:12.5px;font-weight:600;}' +
     '.remove:hover{text-decoration:underline;}' +
-    'button{font-family:inherit;padding:9px 18px;margin:0 8px 8px 0;border-radius:4px;' +
-    'border:1px solid var(--sf-input-border);background:#fff;color:var(--sf-blue);font-size:13.5px;font-weight:600;cursor:pointer;}' +
+    'button{font-family:inherit;padding:9px 18px;margin:0 8px 8px 0;border-radius:6px;' +
+    'border:1px solid var(--sf-input-border);background:#fff;color:var(--sf-accent);font-size:13.5px;font-weight:600;cursor:pointer;}' +
     'button:hover{background:var(--sf-bg);}' +
-    '.primary{background:var(--sf-blue);border-color:var(--sf-blue);color:#fff;}' +
-    '.primary:hover{background:var(--sf-blue-dark);border-color:var(--sf-blue-dark);}' +
+    '.primary{background:var(--sf-primary-grad);border-color:var(--sf-accent-dark);color:#fff;}' +
+    '.primary:hover{background:var(--sf-primary-grad-hover);border-color:var(--sf-accent-dark);}' +
     '#status{margin-top:16px;white-space:pre-wrap;font-size:13.5px;color:var(--sf-text);}' +
     '.tabs{display:flex;gap:4px;border-bottom:1px solid var(--sf-border);margin-bottom:24px;}' +
     '.tabbtn{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;' +
     'padding:11px 16px;margin:0;font-size:14.5px;font-weight:600;color:var(--sf-muted);cursor:pointer;}' +
-    '.tabbtn:hover{color:var(--sf-blue);background:none;}' +
-    '.tabbtn.active{border-bottom-color:var(--sf-blue);color:var(--sf-blue);}' +
+    '.tabbtn:hover{color:var(--sf-accent);background:none;}' +
+    '.tabbtn.active{border-bottom-color:var(--sf-accent);color:var(--sf-accent-dark);}' +
     '.card{border:1px solid var(--sf-border);border-radius:8px;padding:16px;margin-bottom:12px;background:#fff;}' +
     '.card b{color:var(--sf-navy);font-size:14.5px;}' +
-    '.badge{display:inline-block;background:#eaf5fe;color:var(--sf-blue-dark);border-radius:10px;' +
-    'padding:3px 11px;font-size:12px;font-weight:600;margin-left:6px;}' +
+    '.badge{display:inline-block;background:#f1f5f9;color:#475569;border-radius:10px;' +
+    'padding:3px 11px;font-size:12px;font-weight:600;margin-left:6px;' +
+    'font-family:var(--sf-num-font);font-variant-numeric:tabular-nums;}' +
     '.badge-muted{background:var(--sf-bg);color:var(--sf-muted);}' +
-    '.badge-warn{background:#fef0ec;color:var(--sf-danger);}' +
+    '.badge-ai{background:#fff1f2;color:var(--sf-accent-dark);}' +
+    '.badge-alert{background:var(--sf-danger);color:#fff;}' +
     '.cardtext{white-space:pre-wrap;margin-top:10px;font-size:13.5px;color:var(--sf-text);line-height:1.6;' +
-    'background:#faf9f8;border:1px solid #f0efed;border-radius:6px;padding:12px;}' +
-    '#companyOverview,#learnerHistory,#companyMatrix,#groupOverview,#nextScheduleList{margin-top:14px;}' +
+    'background:var(--sf-bg);border:1px solid #eef2f6;border-radius:6px;padding:12px;}' +
+    '#companyMatrix{margin-top:14px;}' +
     'hr{border:none;border-top:1px solid var(--sf-border);margin:26px 0;}' +
     '.matrix-wrap{overflow-x:auto;border:1px solid var(--sf-border);border-radius:8px;}' +
     'table.matrix{border-collapse:collapse;width:100%;}' +
@@ -753,9 +933,9 @@ function buildWebAppHtml_() {
     'vertical-align:top;white-space:pre-wrap;min-width:220px;}' +
     '.matrix thead th{background:var(--sf-navy);color:#fff;font-weight:600;white-space:nowrap;}' +
     '.matrix tbody th{background:#fff;color:var(--sf-navy);font-weight:700;text-align:center;' +
-    'white-space:nowrap;min-width:auto;}' +
+    'white-space:nowrap;min-width:auto;font-family:var(--sf-num-font);font-variant-numeric:tabular-nums;}' +
     '.matrix thead th:first-child,.matrix tbody th{position:sticky;left:0;}' +
-    '.matrix tbody tr:nth-child(even) td,.matrix tbody tr:nth-child(even) th{background:#faf9f8;}' +
+    '.matrix tbody tr:nth-child(even) td,.matrix tbody tr:nth-child(even) th{background:var(--sf-bg);}' +
     '</style></head><body>' +
 
     '<div class="sf-header"><span class="sf-dot"></span>学習進捗ログ</div>' +
@@ -769,18 +949,27 @@ function buildWebAppHtml_() {
 
     '<div id="writeTab">' +
     '<h2>VTTから自動作成</h2>' +
-    '<p class="hint">Zoomの文字起こし(.vtt)をアップロードして「AIで要約を作成」を押すと、下の記録内容欄に' +
-    '下書きが自動で入ります。内容を確認・必要なら修正してから「この内容で書き込む」を押してください。' +
-    '各対象者の「次回相談予定日」を入力しておくと、日程が確定し次第「次回日程一覧」に自動反映されます' +
-    '(未確定なら空のままでOK)。</p>' +
+    '<div class="viewmode" id="writeModeWrap">' +
+    '<button type="button" class="modebtn active" id="wmode-single" onclick="setWriteMode(\'single\')">1件ずつ(個別・集団相談)</button>' +
+    '<button type="button" class="modebtn" id="wmode-bulk" onclick="setWriteMode(\'bulk\')">複数VTTを一括(個別相談)</button>' +
+    '</div>' +
 
-    '<div class="field"><label>グループから対象者を読み込む(任意・集団相談の場合)</label>' +
+    '<div id="singleWrite">' +
+    '<p class="hint">Zoomの文字起こし(.vtt)をアップロードして「AIで要約を作成」を押すと、下の記録内容欄に' +
+    '下書きが自動で入ります。内容を確認・必要なら修正してから「この内容で書き込む」を押してください。</p>' +
+
+    '<div class="field field-narrow"><label>グループから対象者を読み込む(任意・集団相談の場合)</label>' +
     '<select id="groupSelect"></select></div>' +
     '<button onclick="loadGroupIntoWriteTab()">このグループを対象者欄に読み込む</button>' +
     '<hr>' +
 
-    '<div class="field"><label>VTTファイル</label><input type="file" id="vttFile" accept=".vtt"></div>' +
-    '<div class="field"><label>実施日</label><input type="date" id="sessionDate"></div>' +
+    '<div class="field field-narrow"><label>VTTファイル</label>' +
+    '<div class="dropzone" id="vttDropzone">' +
+    '<input type="file" id="vttFile" accept=".vtt">' +
+    '<div class="dropzone-hint">クリックして選択、またはここにファイルをドラッグ&ドロップ</div>' +
+    '</div></div>' +
+    '<div class="field field-narrow"><label>実施日</label><input type="date" id="sessionDate">' +
+    '<div class="hint" id="dateGuessHint" style="margin:6px 0 0"></div></div>' +
 
     '<div id="rows"></div>' +
     '<button onclick="addRow()">+ 対象者を追加(集団相談の場合)</button>' +
@@ -790,28 +979,47 @@ function buildWebAppHtml_() {
     '<div id="status"></div>' +
     '</div>' +
 
+    '<div id="bulkWrite" style="display:none">' +
+    '<p class="hint">個別相談のVTTをまとめてアップロードすると、ファイル1つにつき1枚のカードが並びます。' +
+    '実施日はファイル名から、対象者はZoomの話者名(一致しない場合はAIによる推定)から自動で入るので、' +
+    '合っているかを確認・修正してから「AIで要約をまとめて作成」→「この内容でまとめて書き込む」を押してください。' +
+    '<b>対象者の自動選択はあくまで下書きです。書き込む前に必ず目視で確認してください。</b></p>' +
+
+    '<div class="field field-narrow"><label>VTTファイル(複数選択できます)</label>' +
+    '<div class="dropzone" id="bulkDropzone">' +
+    '<input type="file" id="bulkVttFiles" accept=".vtt" multiple>' +
+    '<div class="dropzone-hint">クリックしてまとめて選択、またはここに複数のファイルをドラッグ&ドロップ</div>' +
+    '</div></div>' +
+
+    '<div id="bulkList"></div>' +
+    '<button onclick="estimateBulkTargets(false)">AIで対象者を推定し直す</button>' +
+    '<button onclick="clearBulk()">読み込んだファイルを全て消す</button>' +
+    '<br>' +
+    '<button class="primary" onclick="generateBulkSummaries()">AIで要約をまとめて作成</button>' +
+    '<button class="primary" onclick="submitBulk()">この内容でまとめて書き込む</button>' +
+    '<div id="bulkStatus"></div>' +
+    '</div>' +
+
+    '</div>' +
+
     '<div id="viewTab" style="display:none">' +
     '<h2>進捗を確認</h2>' +
-    '<p class="hint">企業を選ぶと、その企業の全受講者について直近の記録を一覧できます。' +
-    '受講者を選んで「全記録を見る」を押すと、その人の全期間の記録を新しい順に確認できます。' +
-    '「表でまとめて見る」では、回数を縦・受講者を横並びにした一覧表で見られます(PC画面向け)。</p>' +
-    '<div class="field"><label>企業(シート)</label><select id="viewSheet" onchange="onViewSheetChange()"></select></div>' +
-    '<button onclick="loadCompanyOverview()">この企業の最新状況を一覧</button>' +
-    '<button onclick="loadCompanyMatrix()">表でまとめて見る(PC向け)</button>' +
-    '<div id="companyOverview"></div>' +
+    '<p class="hint">上のプルダウンで企業(または集団相談のグループ)を選ぶと、その場で左に受講者一覧が出ます。' +
+    '左の受講者をクリックすると、右にその人の全記録が新しい順で表示されます。' +
+    '「表」に切り替えると、回数を縦・受講者を横並びにした一覧表で見られます(PC画面向け)。</p>' +
+    '<div class="view-toolbar">' +
+    '<div class="field"><label>表示対象</label>' +
+    '<select id="viewTarget" onchange="onViewTargetChange()"></select></div>' +
+    '<div class="viewmode" id="viewModeWrap">' +
+    '<button type="button" class="modebtn active" id="modebtn-cards" onclick="setViewMode(\'cards\')">一覧</button>' +
+    '<button type="button" class="modebtn" id="modebtn-table" onclick="setViewMode(\'table\')">表</button>' +
+    '</div></div>' +
+    '<div id="viewStatus" class="hint"></div>' +
+    '<div id="viewPanes" class="panes">' +
+    '<div class="pane-list" id="memberList"></div>' +
+    '<div class="pane-detail" id="memberDetail"></div>' +
+    '</div>' +
     '<div id="companyMatrix"></div>' +
-    '<hr>' +
-    '<div class="field"><label>受講者</label><select id="viewLearner"></select></div>' +
-    '<button onclick="loadLearnerHistory()">この受講者の全記録を見る</button>' +
-    '<div id="learnerHistory"></div>' +
-
-    '<hr>' +
-    '<h3>グループで見る</h3>' +
-    '<p class="hint">集団相談のグループ単位で、メンバー全員(企業をまたいでもよい)の直近の記録をまとめて確認できます。</p>' +
-    '<div class="field"><label>グループ</label><select id="viewGroupSelect"></select></div>' +
-    '<button onclick="loadGroupOverview()">このグループの状況を一覧</button>' +
-    '<div id="groupOverview"></div>' +
-
     '<hr>' +
     '<h3>次回日程一覧</h3>' +
     '<p class="hint">「記録を追加」タブで次回相談予定日を入力した受講者について、全社横断で次回日付が早い順に一覧できます。</p>' +
@@ -824,14 +1032,15 @@ function buildWebAppHtml_() {
     '<p class="hint">新しい企業(シート)や受講者を追加できます。企業を登録した直後は受講者が0人なので、' +
     'このあと続けて受講者を最低1人登録してください(受講者が0人の間は他の画面のプルダウンにまだ出てきません)。</p>' +
 
-    '<div class="field"><label>新しい企業名</label><input type="text" id="newCompanyName" placeholder="例: サンプル商事株式会社"></div>' +
+    '<div class="field field-narrow"><label>新しい企業名</label><input type="text" id="newCompanyName" placeholder="例: サンプル商事株式会社"></div>' +
     '<button class="primary" onclick="createCompanyClick()">企業を登録</button>' +
     '<div id="companyCreateStatus" class="hint"></div>' +
 
     '<hr>' +
 
-    '<div class="field"><label>企業(シート)</label><select id="learnerCompanySelect"></select></div>' +
-    '<div class="field"><label>新しい受講者名</label><input type="text" id="newLearnerName" placeholder="例: 山田太郎"></div>' +
+    '<div class="field field-narrow"><label>企業(シート)</label><select id="learnerCompanySelect"></select></div>' +
+    '<div class="field field-narrow"><label>新しい受講者名(複数人まとめて登録する場合は1行に1人ずつ)</label>' +
+    '<textarea id="newLearnerNames" rows="4" placeholder="例:\n山田太郎\n鈴木花子"></textarea></div>' +
     '<button class="primary" onclick="createLearnerClick()">受講者を登録</button>' +
     '<div id="learnerCreateStatus" class="hint"></div>' +
 
@@ -840,11 +1049,11 @@ function buildWebAppHtml_() {
     '<h2>グループ管理(集団相談用)</h2>' +
     '<p class="hint">よく行う集団相談の組み合わせを「グループ」として保存しておくと、' +
     '「記録を追加」タブで対象者欄をまとめて呼び出せます(複数企業にまたがってもよい)。</p>' +
-    '<div id="groupList"></div>' +
+    '<div id="groupList" class="card-grid"></div>' +
     '<div id="groupRows"></div>' +
     '<button onclick="addGroupRow()">+ メンバーを追加</button>' +
     '<br>' +
-    '<div class="field"><label>グループ名</label><input type="text" id="newGroupName" placeholder="例: サンプル商事+テスト工業 合同研修"></div>' +
+    '<div class="field field-narrow"><label>グループ名</label><input type="text" id="newGroupName" placeholder="例: サンプル商事+テスト工業 合同研修"></div>' +
     '<button class="primary" onclick="saveGroupClick()">このメンバーでグループを保存</button>' +
     '<div id="groupSaveStatus" class="hint"></div>' +
     '</div>' +
@@ -852,20 +1061,260 @@ function buildWebAppHtml_() {
     '</div></div>' +
 
     '<script>' +
-    'let structure=[];let rowCount=0;let groupRowCount=0;let vttText="";let groupsCache=[];' +
+    'let structure=[];let allCompanyNames=[];let rowCount=0;let groupRowCount=0;let vttText="";' +
+    'let groupsCache=[];let firstRowPrefillDone=false;let viewMode="cards";let viewLoaded=false;' +
+    'let writeMode="single";let bulkFiles=[];let bulkCount=0;' +
     'google.script.run.withSuccessHandler(function(data){' +
-    'structure=data;addRow();populateViewSheet();populateLearnerCompanySelect();addGroupRow();})' +
+    'structure=data;addRow();populateViewTarget();addGroupRow();})' +
     '.withFailureHandler(function(err){setStatus("読み込みエラー: "+err.message);})' +
     '.getStructureForDialog();' +
+    'google.script.run.withSuccessHandler(function(names){allCompanyNames=names||[];populateLearnerCompanySelect();})' +
+    '.withFailureHandler(function(err){document.getElementById("learnerCreateStatus").textContent="読み込みエラー: "+err.message;})' +
+    '.getAllCompanyNames();' +
     'google.script.run.withSuccessHandler(renderGroupList)' +
     '.withFailureHandler(function(err){document.getElementById("groupList").textContent="読み込みエラー: "+err.message;})' +
     '.getGroups();' +
 
-    'document.getElementById("vttFile").addEventListener("change",function(ev){' +
-    'const f=ev.target.files[0];if(!f)return;' +
+    'function handleVttFile(f){if(!f)return;' +
     'const reader=new FileReader();' +
-    'reader.onload=function(e){vttText=e.target.result;setStatus("VTT読み込み完了: "+f.name);};' +
-    'reader.readAsText(f);});' +
+    'reader.onload=function(e){' +
+    'vttText=e.target.result;' +
+    'const guessed=guessDateFromFilename(f.name);' +
+    'const hintEl=document.getElementById("dateGuessHint");' +
+    'if(guessed){document.getElementById("sessionDate").value=guessed;' +
+    'hintEl.textContent="ファイル名から実施日を "+guessed+" と推測しました。違う場合は修正してください。";' +
+    '}else{hintEl.textContent="";}' +
+    'setStatus("VTT読み込み完了: "+f.name);};' +
+    'reader.readAsText(f);}' +
+
+    'function guessDateFromFilename(name){' +
+    'let m=/GMT(\\d{4})(\\d{2})(\\d{2})/.exec(name);' +
+    'if(m)return m[1]+"-"+m[2]+"-"+m[3];' +
+    'm=/(\\d{4})-(\\d{2})-(\\d{2})/.exec(name);' +
+    'if(m)return m[1]+"-"+m[2]+"-"+m[3];' +
+    'm=/(\\d{4})(\\d{2})(\\d{2})/.exec(name);' +
+    'if(m){const mo=+m[2],d=+m[3];if(mo>=1&&mo<=12&&d>=1&&d<=31)return m[1]+"-"+m[2]+"-"+m[3];}' +
+    'return null;}' +
+
+    'document.getElementById("vttFile").addEventListener("change",function(ev){handleVttFile(ev.target.files[0]);});' +
+    '(function(){const dz=document.getElementById("vttDropzone");' +
+    'dz.addEventListener("dragover",function(ev){ev.preventDefault();dz.classList.add("dragover");});' +
+    'dz.addEventListener("dragleave",function(){dz.classList.remove("dragover");});' +
+    'dz.addEventListener("drop",function(ev){ev.preventDefault();dz.classList.remove("dragover");' +
+    'const fs=ev.dataTransfer.files;if(!fs||!fs.length)return;' +
+    'if(fs.length>1){setWriteMode("bulk");handleBulkFiles(fs);return;}' +
+    'try{document.getElementById("vttFile").files=fs;}catch(e){}' +
+    'handleVttFile(fs[0]);});})();' +
+
+    'function setWriteMode(m){writeMode=m;' +
+    'document.getElementById("singleWrite").style.display=(m==="single")?"":"none";' +
+    'document.getElementById("bulkWrite").style.display=(m==="bulk")?"":"none";' +
+    'document.getElementById("wmode-single").classList.toggle("active",m==="single");' +
+    'document.getElementById("wmode-bulk").classList.toggle("active",m==="bulk");}' +
+
+    'function setBulkStatus(msg){document.getElementById("bulkStatus").textContent=msg||"";}' +
+    'function setBulkCardStatus(id,msg){const el=document.getElementById("bstatus-"+id);if(el)el.textContent=msg||"";}' +
+    'function setBulkBadge(id,text,cls){const el=document.getElementById("bulkbadge-"+id);if(!el)return;' +
+    'if(!text){el.style.display="none";el.textContent="";return;}' +
+    'el.style.display="";el.className="badge"+(cls?" "+cls:"");el.textContent=text;}' +
+
+    'function bulkSheetOptionsHtml(){return "<option value=\\"\\">(選択してください)</option>"+sheetOptionsHtml();}' +
+    'function bulkLearnerOptionsHtml(s){return "<option value=\\"\\">(選択してください)</option>"+learnerOptionsHtml(s);}' +
+    'function updateBulkLearners(id){' +
+    'document.getElementById("blearner-"+id).innerHTML=bulkLearnerOptionsHtml(document.getElementById("bsheet-"+id).value);}' +
+    'function onBulkManualChange(id){setBulkBadge(id,"手動で選択","");}' +
+    'function removeBulk(id){const el=document.getElementById("bulk-"+id);if(el)el.remove();' +
+    'bulkFiles=bulkFiles.filter(function(r){return r.id!==id;});}' +
+    'function clearBulk(){document.getElementById("bulkList").innerHTML="";bulkFiles=[];' +
+    'try{document.getElementById("bulkVttFiles").value="";}catch(e){}setBulkStatus("");}' +
+
+    'function parseVtt(text){' +
+    'const lines=String(text||"").split(/\\r?\\n/);' +
+    'const counts=Object.create(null);const order=[];let excerpt="";' +
+    'for(let i=0;i<lines.length;i++){' +
+    'let ln=lines[i].trim();' +
+    'if(!ln)continue;' +
+    'if(/^WEBVTT/i.test(ln))continue;' +
+    'if(ln.indexOf("--\\u003e")!==-1)continue;' +
+    'if(/^\\d+$/.test(ln))continue;' +
+    'if(/^(NOTE|STYLE|REGION)\\b/.test(ln))continue;' +
+    'let speaker=null;' +
+    'let m=/^<v\\s+([^>]+)>/.exec(ln);' +
+    'if(m){speaker=m[1].trim();ln=ln.replace(/^<v\\s+[^>]+>/,"").replace(/<\\/v>$/,"").trim();}' +
+    'else{m=/^([^:：]{1,30})[:：]\\s*(.*)$/.exec(ln);if(m){speaker=m[1].trim();ln=m[2].trim();}}' +
+    'if(speaker){if(counts[speaker]===undefined){counts[speaker]=0;order.push(speaker);}counts[speaker]++;}' +
+    'if(excerpt.length<1200)excerpt+=(speaker?speaker+": ":"")+ln+"\\n";}' +
+    'order.sort(function(a,b){return counts[b]-counts[a];});' +
+    'return {speakers:order.slice(0,12),excerpt:excerpt.slice(0,1200)};}' +
+
+    'function normName(s){return String(s||"").replace(/[（(][^）)]*[）)]/g,"")' +
+    '.replace(/[\\s\\u3000・,，.．]/g,"").toLowerCase();}' +
+
+    'function learnerCandidates(){const out=[];' +
+    'structure.forEach(function(s){s.learners.forEach(function(l){' +
+    'out.push({sheetName:s.sheetName,learner:l.learner});});});return out;}' +
+
+    'function localGuess(speakers){' +
+    'const cands=learnerCandidates().map(function(c){' +
+    'return {sheetName:c.sheetName,learner:c.learner,norm:normName(c.learner)};});' +
+    'const sp=(speakers||[]).map(normName).filter(function(x){return x;});' +
+    'if(!sp.length)return null;' +
+    'const exact=cands.filter(function(c){return c.norm&&sp.indexOf(c.norm)!==-1;});' +
+    'if(exact.length)return exact.length===1?exact[0]:null;' +
+    'const partial=cands.filter(function(c){' +
+    'if(c.norm.length<2)return false;' +
+    'return sp.some(function(x){' +
+    'return x.length>=2&&(x.indexOf(c.norm)!==-1||c.norm.indexOf(x)!==-1);});});' +
+    'return partial.length===1?partial[0]:null;}' +
+
+    'function addBulkCard(name){bulkCount++;const id=bulkCount;' +
+    'const rec={id:id,name:name,text:"",speakers:[],excerpt:""};bulkFiles.push(rec);' +
+    'const div=document.createElement("div");div.className="row";div.id="bulk-"+id;' +
+    'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeBulk("+id+")\\">✕ 削除</span>"+' +
+    '"<div class=\\"bulk-file\\">"+esc(name)+" <span class=\\"badge\\" id=\\"bulkbadge-"+id+"\\"></span></div>"+' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><label>実施日</label><input type=\\"date\\" id=\\"bdate-"+id+"\\"></div>"+' +
+    '"<div class=\\"field\\"><label>企業(シート)</label>"+' +
+    '"<select id=\\"bsheet-"+id+"\\" onchange=\\"updateBulkLearners("+id+");onBulkManualChange("+id+")\\">"+' +
+    'bulkSheetOptionsHtml()+"</select></div>"+' +
+    '"<div class=\\"field\\"><label>受講者</label>"+' +
+    '"<select id=\\"blearner-"+id+"\\" onchange=\\"onBulkManualChange("+id+")\\"></select></div>"+' +
+    '"</div>"+' +
+    '"<label>記録内容</label><textarea id=\\"btext-"+id+"\\" ' +
+    'placeholder=\\"「AIで要約をまとめて作成」を押すとここに下書きが入ります\\"></textarea>"+' +
+    '"<div class=\\"bulk-cardstatus\\" id=\\"bstatus-"+id+"\\"></div>";' +
+    'document.getElementById("bulkList").appendChild(div);' +
+    'updateBulkLearners(id);' +
+    'setBulkBadge(id,"対象者を選んでください","badge-alert");' +
+    'const guessed=guessDateFromFilename(name);' +
+    'if(guessed)document.getElementById("bdate-"+id).value=guessed;' +
+    'else setBulkCardStatus(id,"ファイル名から実施日を判定できませんでした。手動で入力してください。");' +
+    'return rec;}' +
+
+    'function handleBulkFiles(list){' +
+    'const files=Array.prototype.slice.call(list||[]);' +
+    'if(!files.length)return;' +
+    'let remaining=files.length;' +
+    'setBulkStatus("VTTを読み込み中...("+files.length+"件)");' +
+    'files.forEach(function(f){' +
+    'const rec=addBulkCard(f.name);' +
+    'const reader=new FileReader();' +
+    'reader.onload=function(e){rec.text=String(e.target.result||"");' +
+    'const parsed=parseVtt(rec.text);rec.speakers=parsed.speakers;rec.excerpt=parsed.excerpt;' +
+    'applyLocalGuess(rec);' +
+    'if(--remaining===0)afterBulkLoad();};' +
+    'reader.onerror=function(){setBulkCardStatus(rec.id,"❌ ファイルを読み込めませんでした。");' +
+    'if(--remaining===0)afterBulkLoad();};' +
+    'reader.readAsText(f);});}' +
+
+    'function applyLocalGuess(rec){' +
+    'const g=localGuess(rec.speakers);if(!g)return;' +
+    'document.getElementById("bsheet-"+rec.id).value=g.sheetName;' +
+    'updateBulkLearners(rec.id);' +
+    'document.getElementById("blearner-"+rec.id).value=g.learner;' +
+    'setBulkBadge(rec.id,"話者名から自動選択","");}' +
+
+    'function unresolvedBulk(){return bulkFiles.filter(function(r){' +
+    'const el=document.getElementById("blearner-"+r.id);return r.text&&el&&!el.value;});}' +
+
+    'function afterBulkLoad(){' +
+    'if(!unresolvedBulk().length){' +
+    'setBulkStatus("読み込みが終わりました。対象者はZoomの話者名から自動で選んでいます。' +
+    '合っているか確認してから要約を作成してください。");return;}' +
+    'estimateBulkTargets(true);}' +
+
+    'function estimateBulkTargets(onlyUnresolved){' +
+    'const targets=(onlyUnresolved?unresolvedBulk():bulkFiles).filter(function(r){return r.text;});' +
+    'if(!targets.length){setBulkStatus("先にVTTファイルを選択してください。");return;}' +
+    'const candidates=learnerCandidates();' +
+    'if(!candidates.length){' +
+    'setBulkStatus("受講者がまだ登録されていないため推定できません。「登録・管理」タブで登録してください。");return;}' +
+    'setBulkStatus("AIが対象者を推定中です...("+targets.length+"件・数十秒かかることがあります)");' +
+    'google.script.run.withSuccessHandler(function(res){' +
+    'let n=0;' +
+    '(res||[]).forEach(function(g){' +
+    'const rec=bulkFiles.find(function(r){return r.id===g.id;});if(!rec)return;' +
+    'const sheetEl=document.getElementById("bsheet-"+rec.id);' +
+    'const learnerEl=document.getElementById("blearner-"+rec.id);' +
+    'if(!sheetEl||!learnerEl)return;' +
+    'const prevSheet=sheetEl.value,prevLearner=learnerEl.value;' +
+    'sheetEl.value=g.sheetName;updateBulkLearners(rec.id);learnerEl.value=g.learner;' +
+    'if(learnerEl.value===g.learner){setBulkBadge(rec.id,"AIが推定","badge-ai");n++;return;}' +
+    'sheetEl.value=prevSheet;updateBulkLearners(rec.id);learnerEl.value=prevLearner;});' +
+    'const left=unresolvedBulk().length;' +
+    'setBulkStatus("AIが"+n+"件の対象者を推定しました。推定は下書きなので、書き込む前に必ず確認してください。"' +
+    '+(left?("　判断できなかった"+left+"件は手動で選んでください。"):""));' +
+    '}).withFailureHandler(function(err){' +
+    'setBulkStatus("対象者の推定でエラーが発生しました: "+err.message+"\\n対象者は手動で選んでください。");})' +
+    '.estimateTargets({files:targets.map(function(r){' +
+    'return {id:r.id,name:r.name,speakers:r.speakers,excerpt:r.excerpt};}),candidates:candidates});}' +
+
+    'function generateBulkSummaries(){' +
+    'const list=bulkFiles.filter(function(r){return r.text;});' +
+    'if(!list.length){setBulkStatus("先にVTTファイルを選択してください。");return;}' +
+    'let i=0,ok=0,ng=0;' +
+    'function next(){' +
+    'if(i>=list.length){' +
+    'setBulkStatus("要約の作成が終わりました(成功 "+ok+"件 / 失敗・スキップ "+ng+"件)。"' +
+    '+"内容を確認・修正してから「この内容でまとめて書き込む」を押してください。");return;}' +
+    'const rec=list[i];i++;' +
+    'const date=document.getElementById("bdate-"+rec.id).value;' +
+    'if(!date){setBulkCardStatus(rec.id,"⏭ 実施日が未入力のためスキップしました。");ng++;next();return;}' +
+    'const sheetName=document.getElementById("bsheet-"+rec.id).value;' +
+    'const learner=document.getElementById("blearner-"+rec.id).value;' +
+    'setBulkStatus("AIが要約を作成中です... ("+i+"/"+list.length+") "+rec.name);' +
+    'setBulkCardStatus(rec.id,"要約を作成中...");' +
+    'google.script.run.withSuccessHandler(function(text){' +
+    'document.getElementById("btext-"+rec.id).value=text;' +
+    'setBulkCardStatus(rec.id,"✅ 要約の下書きを作成しました。内容を確認してください。");ok++;next();})' +
+    '.withFailureHandler(function(err){' +
+    'setBulkCardStatus(rec.id,"❌ 要約エラー: "+err.message);ng++;next();})' +
+    '.generateSummary({vttText:rec.text,date:date,isGroup:false,participants:[sheetName+":"+learner]});}' +
+    'next();}' +
+
+    'function submitBulk(){' +
+    'const entries=[];const skipped=[];' +
+    'bulkFiles.forEach(function(r){' +
+    'const sheetEl=document.getElementById("bsheet-"+r.id);if(!sheetEl)return;' +
+    'const sheetName=sheetEl.value;' +
+    'const learner=document.getElementById("blearner-"+r.id).value;' +
+    'const text=document.getElementById("btext-"+r.id).value;' +
+    'if(!text.trim()){skipped.push(r.name+"(記録内容が空)");return;}' +
+    'if(!sheetName||!learner){skipped.push(r.name+"(対象者が未選択)");return;}' +
+    'entries.push({sheetName:sheetName,learner:learner,text:text});});' +
+    'if(!entries.length){setBulkStatus(["書き込める行がありません。"].concat(' +
+    'skipped.map(function(s){return "⏭ "+s;})).join("\\n"));return;}' +
+    'setBulkStatus("書き込み中...("+entries.length+"件)");' +
+    'google.script.run.withSuccessHandler(function(results){' +
+    'const lines=results.map(function(r){' +
+    'return (r.status==="written"?"✅ ":"❌ ")+r.sheetName+" / "+r.learner+" / "' +
+    '+(r.status==="written"?r.cell:r.error);});' +
+    'skipped.forEach(function(s){lines.push("⏭ スキップ: "+s);});' +
+    'setBulkStatus(lines.join("\\n"));})' +
+    '.withFailureHandler(function(err){setBulkStatus("書き込みエラー: "+err.message);})' +
+    '.submitEntries(entries);}' +
+
+    'document.getElementById("bulkVttFiles").addEventListener("change",function(ev){' +
+    'handleBulkFiles(ev.target.files);try{ev.target.value="";}catch(e){}});' +
+    '(function(){const dz=document.getElementById("bulkDropzone");' +
+    'dz.addEventListener("dragover",function(ev){ev.preventDefault();dz.classList.add("dragover");});' +
+    'dz.addEventListener("dragleave",function(){dz.classList.remove("dragover");});' +
+    'dz.addEventListener("drop",function(ev){ev.preventDefault();dz.classList.remove("dragover");' +
+    'handleBulkFiles(ev.dataTransfer.files);});})();' +
+
+    'function saveLastParticipant_(sheetName,learner){' +
+    'try{localStorage.setItem("learnerProgressLog.lastParticipant",JSON.stringify({sheetName:sheetName,learner:learner}));}catch(e){}}' +
+    'function loadLastParticipant_(){' +
+    'try{const v=localStorage.getItem("learnerProgressLog.lastParticipant");return v?JSON.parse(v):null;}catch(e){return null;}}' +
+    'function applyLastParticipant_(id){' +
+    'const last=loadLastParticipant_();if(!last)return;' +
+    'const sheetEl=document.getElementById("sheet-"+id);if(!sheetEl)return;' +
+    'const hasSheet=Array.prototype.some.call(sheetEl.options,function(o){return o.value===last.sheetName;});' +
+    'if(!hasSheet)return;' +
+    'sheetEl.value=last.sheetName;updateLearners(id);' +
+    'const learnerEl=document.getElementById("learner-"+id);' +
+    'const hasLearner=Array.prototype.some.call(learnerEl.options,function(o){return o.value===last.learner;});' +
+    'if(hasLearner)learnerEl.value=last.learner;}' +
 
     'function esc(s){return String(s).replace(/[&<>"\']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c];});}' +
 
@@ -880,20 +1329,23 @@ function buildWebAppHtml_() {
     'document.getElementById("tabbtn-write").classList.toggle("active",name==="write");' +
     'document.getElementById("tabbtn-view").classList.toggle("active",name==="view");' +
     'document.getElementById("tabbtn-manage").classList.toggle("active",name==="manage");' +
-    'document.getElementById("sfContainer").classList.toggle("wide",name==="view");}' +
+    'if(name==="view")ensureViewLoaded();}' +
 
     'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
     'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeRow("+id+")\\">✕ 削除</span>"+' +
-    '"<label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select>"+' +
-    '"<label>受講者</label><select id=\\"learner-"+id+"\\"></select>"+' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
+    '"<div class=\\"field\\"><label>受講者</label><select id=\\"learner-"+id+"\\"></select></div>"+' +
+    '"</div>"+' +
     '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
     '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
-    '"<div class=\\"next-schedule-fields\\">"+' +
+    '"<div class=\\"field-grid\\">"+' +
     '"<div class=\\"field\\"><input type=\\"date\\" id=\\"nextdate-"+id+"\\"></div>"+' +
     '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextstart-"+id+"\\" placeholder=\\"開始\\"></div>"+' +
     '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextend-"+id+"\\" placeholder=\\"終了\\"></div>"+' +
     '"</div>";' +
-    'document.getElementById("rows").appendChild(div);updateLearners(id);}' +
+    'document.getElementById("rows").appendChild(div);updateLearners(id);' +
+    'if(!firstRowPrefillDone){firstRowPrefillDone=true;applyLastParticipant_(id);}}' +
 
     'function updateLearners(id){' +
     'document.getElementById("learner-"+id).innerHTML=learnerOptionsHtml(document.getElementById("sheet-"+id).value);}' +
@@ -939,38 +1391,130 @@ function buildWebAppHtml_() {
     'if(r.nextScheduleStatus==="error")line+="(次回日程の反映に失敗: "+r.nextScheduleError+")";' +
     'return line;' +
     '}).join("\\n"));' +
+    'if(entries.length===1&&results[0]&&results[0].status==="written"){' +
+    'saveLastParticipant_(entries[0].sheetName,entries[0].learner);}' +
     '}).withFailureHandler(function(err){setStatus("書き込みエラー: "+err.message);})' +
     '.submitEntries(entries);}' +
 
-    'function populateViewSheet(){' +
-    'document.getElementById("viewSheet").innerHTML=sheetOptionsHtml();' +
-    'onViewSheetChange();}' +
+    'function populateViewTarget(){' +
+    'const sel=document.getElementById("viewTarget");const prev=sel.value;let html="";' +
+    'if(structure.length){html+="<optgroup label=\\"企業\\">"+structure.map(function(s){' +
+    'return "<option value=\\"c:"+esc(s.sheetName)+"\\">"+esc(s.sheetName)+"</option>";}).join("")+"</optgroup>";}' +
+    'if(groupsCache.length){html+="<optgroup label=\\"グループ(集団相談)\\">"+groupsCache.map(function(g){' +
+    'return "<option value=\\"g:"+esc(g.name)+"\\">"+esc(g.name)+"</option>";}).join("")+"</optgroup>";}' +
+    'sel.innerHTML=html;' +
+    'if(prev)sel.value=prev;' +
+    'if(!sel.value&&sel.options.length)sel.selectedIndex=0;' +
+    'if(document.getElementById("viewTab").style.display!=="none")ensureViewLoaded();}' +
 
-    'function onViewSheetChange(){' +
-    'document.getElementById("viewLearner").innerHTML=learnerOptionsHtml(document.getElementById("viewSheet").value);}' +
+    'function ensureViewLoaded(){' +
+    'if(viewLoaded)return;' +
+    'const sel=document.getElementById("viewTarget");' +
+    'if(!sel||!sel.options.length)return;' +
+    'viewLoaded=true;onViewTargetChange();}' +
 
-    'function loadCompanyOverview(){' +
-    'const sheetName=document.getElementById("viewSheet").value;' +
-    'const el=document.getElementById("companyOverview");el.textContent="読み込み中...";' +
-    'google.script.run.withSuccessHandler(renderCompanyOverview)' +
+    'function setViewStatus(msg){document.getElementById("viewStatus").textContent=msg||"";}' +
+
+    'function loadNextScheduleList(){' +
+    'const el=document.getElementById("nextScheduleList");el.textContent="読み込み中...";' +
+    'google.script.run.withSuccessHandler(renderNextScheduleList)' +
     '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
-    '.getCompanyOverview(sheetName);}' +
+    '.getNextScheduleList();}' +
 
-    'function renderCompanyOverview(list){' +
-    'const el=document.getElementById("companyOverview");el.innerHTML="";' +
-    'if(list.length===0){el.textContent="受講者が見つかりません。";return;}' +
+    'function renderNextScheduleList(list){' +
+    'const el=document.getElementById("nextScheduleList");el.innerHTML="";' +
+    'if(!list||list.length===0){el.textContent="次回日程が登録されている受講者はいません。";return;}' +
+    'const todayStr=new Date().toISOString().slice(0,10);' +
     'list.forEach(function(item){' +
     'const card=document.createElement("div");card.className="card";' +
-    'card.innerHTML="<b>"+esc(item.learner)+"</b>"' +
-    '+"<span class=\\"badge\\">記録"+item.recordCount+"件</span>"' +
-    '+(item.lastDate?"<span class=\\"badge badge-muted\\">直近 "+esc(item.lastDate)+"</span>":"")' +
-    '+"<div class=\\"cardtext\\">"+esc(item.lastText||"(記録なし)")+"</div>";' +
-    'const btn=document.createElement("button");btn.textContent="全履歴を見る";' +
-    'btn.addEventListener("click",function(){selectLearnerAndLoad(item.learner);});' +
-    'card.appendChild(btn);el.appendChild(card);});}' +
+    'const isPast=item.nextDate<todayStr;' +
+    'card.innerHTML="<b>"+esc(item.sheetName)+" / "+esc(item.learner)+"</b>"' +
+    '+"<span class=\\""+(isPast?"badge badge-alert":"badge")+"\\">"+esc(item.nextDate)' +
+    '+(item.nextStart?" "+esc(item.nextStart):"")+(item.nextEnd?"〜"+esc(item.nextEnd):"")+"</span>"' +
+    '+(isPast?"<span class=\\"badge badge-muted\\">日付経過(未更新の可能性)</span>":"");' +
+    'el.appendChild(card);});}' +
 
-    'function loadCompanyMatrix(){' +
-    'const sheetName=document.getElementById("viewSheet").value;' +
+    'function setViewMode(m){viewMode=m;' +
+    'document.getElementById("modebtn-cards").classList.toggle("active",m==="cards");' +
+    'document.getElementById("modebtn-table").classList.toggle("active",m==="table");' +
+    'onViewTargetChange();}' +
+
+    'function onViewTargetChange(){' +
+    'const v=document.getElementById("viewTarget").value;' +
+    'const panes=document.getElementById("viewPanes");' +
+    'const matrix=document.getElementById("companyMatrix");' +
+    'const modeWrap=document.getElementById("viewModeWrap");' +
+    'matrix.innerHTML="";' +
+    'if(!v){panes.style.display="none";setViewStatus("表示できる企業がまだありません。「登録・管理」タブで企業と受講者を登録してください。");return;}' +
+    'const kind=v.slice(0,2),name=v.slice(2);' +
+    'if(kind==="g:"){' +
+    'modeWrap.style.display="none";panes.style.display="";' +
+    'loadGroupMembers(name);return;}' +
+    'modeWrap.style.display="";' +
+    'if(viewMode==="table"){panes.style.display="none";loadCompanyMatrix(name);}' +
+    'else{panes.style.display="";loadCompanyMembers(name);}}' +
+
+    'function loadCompanyMembers(sheetName){' +
+    'setViewStatus("読み込み中...");' +
+    'google.script.run.withSuccessHandler(function(list){setViewStatus("");' +
+    'renderMemberList((list||[]).map(function(it){' +
+    'return {sheetName:sheetName,learner:it.learner,recordCount:it.recordCount,lastDate:it.lastDate};}));})' +
+    '.withFailureHandler(function(err){setViewStatus("エラー: "+err.message);})' +
+    '.getCompanyOverview(sheetName);}' +
+
+    'function loadGroupMembers(groupName){' +
+    'setViewStatus("読み込み中...");' +
+    'google.script.run.withSuccessHandler(function(list){setViewStatus("");' +
+    'renderMemberList((list||[]).map(function(it){' +
+    'return {sheetName:it.sheetName,learner:it.learner,recordCount:it.recordCount,' +
+    'lastDate:it.lastDate,error:it.error,showCompany:true};}));})' +
+    '.withFailureHandler(function(err){setViewStatus("エラー: "+err.message);})' +
+    '.getGroupOverview(groupName);}' +
+
+    'function renderMemberList(items){' +
+    'const el=document.getElementById("memberList");el.innerHTML="";' +
+    'const detail=document.getElementById("memberDetail");detail.innerHTML="";' +
+    'if(!items.length){el.innerHTML="<div class=\\"pane-empty\\">受講者がいません。</div>";return;}' +
+    'let firstSelectable=null;' +
+    'items.forEach(function(it){' +
+    'const row=document.createElement("div");row.className="member";' +
+    'row.innerHTML="<div class=\\"member-name\\">"+esc(it.learner)+"</div>"' +
+    '+(it.showCompany?"<div class=\\"member-sub\\">"+esc(it.sheetName)+"</div>":"")' +
+    '+"<div class=\\"member-meta\\">"+(it.error?esc(it.error):' +
+    '("記録"+it.recordCount+"件"+(it.lastDate?"　直近 "+esc(it.lastDate):"")))+"</div>";' +
+    'row.addEventListener("click",function(){selectMember(it,row);});' +
+    'el.appendChild(row);' +
+    'if(!it.error&&!firstSelectable)firstSelectable={item:it,row:row};});' +
+    'if(firstSelectable)selectMember(firstSelectable.item,firstSelectable.row);' +
+    'else detail.innerHTML="<div class=\\"pane-empty\\">表示できる記録がありません。</div>";}' +
+
+    'function selectMember(item,row){' +
+    'const rows=document.querySelectorAll("#memberList .member");' +
+    'Array.prototype.forEach.call(rows,function(r){r.classList.remove("active");});' +
+    'row.classList.add("active");' +
+    'const detail=document.getElementById("memberDetail");' +
+    'if(item.error){detail.innerHTML="<div class=\\"pane-empty\\">"+esc(item.error)+"</div>";return;}' +
+    'detail.innerHTML="<div class=\\"pane-empty\\">読み込み中...</div>";' +
+    'google.script.run.withSuccessHandler(function(records){renderMemberDetail(item,records);})' +
+    '.withFailureHandler(function(err){detail.innerHTML="<div class=\\"pane-empty\\">エラー: "+esc(err.message)+"</div>";})' +
+    '.getLearnerHistory(item.sheetName,item.learner);}' +
+
+    'function renderMemberDetail(item,records){' +
+    'const el=document.getElementById("memberDetail");el.innerHTML="";' +
+    'const head=document.createElement("div");head.className="detail-head";' +
+    'head.innerHTML=esc(item.sheetName)+" / "+esc(item.learner)' +
+    '+"<span class=\\"badge\\">記録"+records.length+"件</span>";' +
+    'el.appendChild(head);' +
+    'if(!records.length){' +
+    'const empty=document.createElement("div");empty.className="pane-empty";' +
+    'empty.textContent="まだ記録がありません。";el.appendChild(empty);return;}' +
+    'records.forEach(function(r){' +
+    'const card=document.createElement("div");card.className="card";' +
+    'card.innerHTML=(r.date?"<span class=\\"badge\\">"+esc(r.date)+"</span>":"")' +
+    '+"<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
+    'el.appendChild(card);});}' +
+
+    'function loadCompanyMatrix(sheetName){' +
     'const el=document.getElementById("companyMatrix");el.textContent="読み込み中...";' +
     'google.script.run.withSuccessHandler(renderCompanyMatrix)' +
     '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
@@ -990,48 +1534,11 @@ function buildWebAppHtml_() {
     'html+="</tbody></table></div>";' +
     'el.innerHTML=html;}' +
 
-    'function selectLearnerAndLoad(learner){' +
-    'document.getElementById("viewLearner").value=learner;' +
-    'loadLearnerHistory();}' +
-
-    'function loadLearnerHistory(){' +
-    'const sheetName=document.getElementById("viewSheet").value;' +
-    'const learner=document.getElementById("viewLearner").value;' +
-    'const el=document.getElementById("learnerHistory");el.textContent="読み込み中...";' +
-    'google.script.run.withSuccessHandler(renderLearnerHistory)' +
-    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
-    '.getLearnerHistory(sheetName,learner);}' +
-
-    'function renderLearnerHistory(records){' +
-    'const el=document.getElementById("learnerHistory");el.innerHTML="";' +
-    'if(records.length===0){el.textContent="記録がありません。";return;}' +
-    'records.forEach(function(r){' +
-    'const card=document.createElement("div");card.className="card";' +
-    'card.innerHTML=(r.date?"<span class=\\"badge\\">"+esc(r.date)+"</span>":"")' +
-    '+"<div class=\\"cardtext\\">"+esc(r.text)+"</div>";' +
-    'el.appendChild(card);});}' +
-
-    'function loadNextScheduleList(){' +
-    'const el=document.getElementById("nextScheduleList");el.textContent="読み込み中...";' +
-    'google.script.run.withSuccessHandler(renderNextScheduleList)' +
-    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
-    '.getNextScheduleList();}' +
-
-    'function renderNextScheduleList(list){' +
-    'const el=document.getElementById("nextScheduleList");el.innerHTML="";' +
-    'if(!list||list.length===0){el.textContent="次回日程が登録されている受講者はいません。";return;}' +
-    'const todayStr=new Date().toISOString().slice(0,10);' +
-    'list.forEach(function(item){' +
-    'const card=document.createElement("div");card.className="card";' +
-    'const isPast=item.nextDate<todayStr;' +
-    'card.innerHTML="<b>"+esc(item.sheetName)+" / "+esc(item.learner)+"</b>"' +
-    '+"<span class=\\""+(isPast?"badge badge-warn":"badge")+"\\">"+esc(item.nextDate)' +
-    '+(item.nextStart?" "+esc(item.nextStart):"")+(item.nextEnd?"〜"+esc(item.nextEnd):"")+"</span>"' +
-    '+(isPast?"<span class=\\"badge badge-muted\\">日付経過(未更新の可能性)</span>":"");' +
-    'el.appendChild(card);});}' +
+    'function allCompanyOptionsHtml(){return allCompanyNames.map(function(n){' +
+    'return "<option value=\\""+esc(n)+"\\">"+esc(n)+"</option>";}).join("");}' +
 
     'function populateLearnerCompanySelect(){' +
-    'document.getElementById("learnerCompanySelect").innerHTML=sheetOptionsHtml();}' +
+    'document.getElementById("learnerCompanySelect").innerHTML=allCompanyOptionsHtml();}' +
 
     'function createCompanyClick(){' +
     'const input=document.getElementById("newCompanyName");const name=input.value.trim();' +
@@ -1039,8 +1546,8 @@ function buildWebAppHtml_() {
     'if(!name){statusEl.textContent="企業名を入力してください。";return;}' +
     'statusEl.textContent="登録中...";' +
     'google.script.run.withSuccessHandler(function(){' +
-    'structure.push({sheetName:name,learners:[]});' +
-    'populateViewSheet();populateLearnerCompanySelect();' +
+    'if(allCompanyNames.indexOf(name)===-1)allCompanyNames.push(name);' +
+    'populateLearnerCompanySelect();' +
     'input.value="";' +
     'statusEl.textContent="✅ 登録しました: "+name+"(続けて受講者を登録してください)";' +
     '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
@@ -1048,21 +1555,27 @@ function buildWebAppHtml_() {
 
     'function createLearnerClick(){' +
     'const sheetName=document.getElementById("learnerCompanySelect").value;' +
-    'const input=document.getElementById("newLearnerName");const name=input.value.trim();' +
+    'const input=document.getElementById("newLearnerNames");' +
+    'const names=input.value.split("\\n").map(function(s){return s.trim();}).filter(function(s){return s;});' +
     'const statusEl=document.getElementById("learnerCreateStatus");' +
-    'if(!name){statusEl.textContent="受講者名を入力してください。";return;}' +
+    'if(!sheetName){statusEl.textContent="企業(シート)を選択してください。";return;}' +
+    'if(names.length===0){statusEl.textContent="受講者名を1人以上入力してください。";return;}' +
     'statusEl.textContent="登録中...";' +
     'google.script.run.withSuccessHandler(function(data){' +
-    'structure=data;populateViewSheet();populateLearnerCompanySelect();' +
-    'input.value="";' +
-    'statusEl.textContent="✅ 登録しました: "+sheetName+" / "+name;' +
+    'structure=data.structure;populateViewTarget();' +
+    'const lines=data.results.map(function(r){' +
+    'return (r.status==="created"?"✅ ":"❌ ")+r.learner+(r.status==="error"?"("+r.error+")":"");});' +
+    'if(data.results.some(function(r){return r.status==="created";}))input.value="";' +
+    'statusEl.textContent=lines.join("\\n");' +
     '}).withFailureHandler(function(err){statusEl.textContent="❌ "+err.message;})' +
-    '.createLearner(sheetName,name);}' +
+    '.createLearners(sheetName,names);}' +
 
     'function addGroupRow(){groupRowCount++;const id=groupRowCount;const div=document.createElement("div");div.className="row";div.id="grouprow-"+id;' +
     'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeGroupRow("+id+")\\">✕ 削除</span>"+' +
-    '"<label>企業(シート)</label><select onchange=\\"updateGroupLearners("+id+")\\" id=\\"gsheet-"+id+"\\">"+sheetOptionsHtml()+"</select>"+' +
-    '"<label>受講者</label><select id=\\"glearner-"+id+"\\"></select>";' +
+    '"<div class=\\"field-grid\\">"+' +
+    '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateGroupLearners("+id+")\\" id=\\"gsheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
+    '"<div class=\\"field\\"><label>受講者</label><select id=\\"glearner-"+id+"\\"></select></div>"+' +
+    '"</div>";' +
     'document.getElementById("groupRows").appendChild(div);updateGroupLearners(id);}' +
 
     'function updateGroupLearners(id){' +
@@ -1122,7 +1635,7 @@ function buildWebAppHtml_() {
     'const opts="<option value=\\"\\">(グループを選択)</option>"+groupsCache.map(function(g){' +
     'return "<option value=\\""+esc(g.name)+"\\">"+esc(g.name)+"</option>";}).join("");' +
     'const writeSel=document.getElementById("groupSelect");if(writeSel)writeSel.innerHTML=opts;' +
-    'const viewSel=document.getElementById("viewGroupSelect");if(viewSel)viewSel.innerHTML=opts;}' +
+    'populateViewTarget();}' +
 
     'function loadGroupIntoWriteTab(){' +
     'const name=document.getElementById("groupSelect").value;' +
@@ -1131,33 +1644,12 @@ function buildWebAppHtml_() {
     'if(!g){setStatus("グループが見つかりません: "+name);return;}' +
     'applyGroupToWriteTab(g);}' +
 
-    'function loadGroupOverview(){' +
-    'const name=document.getElementById("viewGroupSelect").value;' +
-    'const el=document.getElementById("groupOverview");' +
-    'if(!name){el.textContent="グループを選択してください。";return;}' +
-    'el.textContent="読み込み中...";' +
-    'google.script.run.withSuccessHandler(renderGroupOverview)' +
-    '.withFailureHandler(function(err){el.textContent="エラー: "+err.message;})' +
-    '.getGroupOverview(name);}' +
-
-    'function renderGroupOverview(list){' +
-    'const el=document.getElementById("groupOverview");el.innerHTML="";' +
-    'if(!list||list.length===0){el.textContent="メンバーが見つかりません。";return;}' +
-    'list.forEach(function(item){' +
-    'const card=document.createElement("div");card.className="card";' +
-    'const header="<b>"+esc(item.sheetName)+" / "+esc(item.learner)+"</b>";' +
-    'if(item.error){' +
-    'card.innerHTML=header+"<span class=\\"badge badge-muted\\">"+esc(item.error)+"</span>";' +
-    '}else{' +
-    'card.innerHTML=header' +
-    '+"<span class=\\"badge\\">記録"+item.recordCount+"件</span>"' +
-    '+(item.lastDate?"<span class=\\"badge badge-muted\\">直近 "+esc(item.lastDate)+"</span>":"")' +
-    '+"<div class=\\"cardtext\\">"+esc(item.lastText||"(記録なし)")+"</div>";' +
-    '}' +
-    'el.appendChild(card);});}' +
     '</script></body></html>';
 }
+
+// GeminiRaytechの疎通確認用(モデル名の動作確認・権限承認の再トリガーに使う一時的なテスト関数)。
+// 末尾が"_"で終わらない名前なので、エディタの実行関数プルダウンに表示される。
 function testGemini() {
-  var text = GeminiRaytech.generateText('こんにちは', 'gemini-3.6-flash');
+  var text = GeminiRaytech.generateText('こんにちは', GEMINI_MODEL_DEFAULT);
   Logger.log(text);
 }
