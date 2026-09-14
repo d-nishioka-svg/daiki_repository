@@ -1,0 +1,5 @@
+.env
+secrets/
+logs/
+dist/
+node_modules/
