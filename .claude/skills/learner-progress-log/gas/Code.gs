@@ -656,11 +656,6 @@ function doGet(e) {
 /**
  * Webアプリ側のJavaScriptから呼ばれる。VTTの内容とフォーム入力からGeminiに要約させる。
  * payload: { vttText, date, isGroup, participants: ["企業名:受講者名", ...] }
- *
- * 戻り値: { text, next: { date, start, end } | null }
- * 次回相談の日程は「【次回に向けて】」の自由記述に埋もれると機械的に読めないため、
- * 同じ1回の呼び出しの中で、要約本文とは別に構造化して取り出させている(別途もう一度
- * Geminiを呼ぶと、件数分の待ち時間が倍になるため)。
  */
 function generateSummary(payload) {
   var prompt = buildSummaryPrompt_(
@@ -669,14 +664,14 @@ function generateSummary(payload) {
     payload.isGroup,
     payload.participants || []
   );
-  return splitNextSchedule_(callGemini_(prompt), payload.date);
+  return callGemini_(prompt);
 }
 
 function buildSummaryPrompt_(vttText, date, isGroup, participants) {
   var kind = isGroup ? '集団' : '個別';
   var remarksLine = isGroup
     ? '[参加者一覧をそのまま記載: ' + participants.join('、') + ']'
-    : '[個別相談なので「特になし」と書くこと]';
+    : '(個別相談のため省略してよい)';
 
   return [
     'あなたは、企業向けITスキル研修(リスキリング支援サービス)の運営担当者です。',
@@ -701,177 +696,9 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
     remarksLine,
     '--- テンプレートここまで ---',
     '',
-    '次に、会話の中で「次回の相談日」が具体的に決まっている場合にかぎり、上のテンプレートの',
-    '後ろに、次の形式の行を1行だけ追加してください。',
-    'NEXT_SCHEDULE: {"date":"YYYY-MM-DD","start":"HH:mm","end":"HH:mm"}',
-    '',
-    '- 今回の実施日は ' + date + ' です。「再来週の水曜」のような相対的な言い方は、この日付を',
-    '  基準に西暦の日付へ直すこと。',
-    '- 日付だけ決まっていて時刻が出ていない場合は、startとendを空文字("")にすること。',
-    '- 終了時刻が出ていない場合はendだけ空文字にすること。',
-    '- **次回日程が決まっていない、または会話から読み取れない場合は、この行自体を出力しない**こと。',
-    '  推測で日付を作らないこと。',
-    '- 【次回に向けて】の中にも「次回日程：10月1日（木）14:00〜15:00」のように書いてよい。',
-    '  その場合もNEXT_SCHEDULE行は省略せず、必ず両方出力すること。',
-    '',
     '--- 以下がVTT文字起こし ---',
-    vttText,
-    '--- VTT文字起こしここまで ---',
-    '',
-    'もう一度確認: 次回の相談日が具体的に決まっているなら、出力の最終行に',
-    'NEXT_SCHEDULE: {"date":"YYYY-MM-DD","start":"HH:mm","end":"HH:mm"} を必ず付けること。',
-    '決まっていなければ、この行は出力しないこと。'
+    vttText
   ].join('\n');
-}
-
-/**
- * モデルの出力から次回日程を取り出し、要約本文と分ける。
- *
- * 取り出し方は2段構え。まず機械可読の NEXT_SCHEDULE 行を探し、それが無ければ要約本文の
- * 「次回」を含む行から日付・時刻を読み取る。モデルは NEXT_SCHEDULE 行を書き忘れることが
- * あるが、【次回に向けて】には「次回日程：10月1日（木）14:00〜」のように書いてくるため、
- * 本文から拾い直せば取りこぼしが減る。
- *
- * 次回日程が会話に出てこなかった場合は next が null になる(空欄のままにする)。
- */
-function splitNextSchedule_(raw, baseDate) {
-  var text = String(raw || '');
-  var next = null;
-
-  // 行頭に「- 」「**」が付いたり全角コロンやコードフェンスで囲われたりするので、緩めに拾う
-  var m = /NEXT_SCHEDULE[* \t]*[:：][ \t\n]*(\{[^{}]*\})/.exec(text);
-  if (m) {
-    next = parseNextScheduleJson_(m[1]);
-    text = removeLinesAround_(text, m.index, m.index + m[0].length - 1)
-      .replace(/^[ \t]*```[a-zA-Z]*[ \t]*$/gm, '');
-  }
-  if (!next) next = extractNextFromBody_(text, baseDate);
-
-  return { text: text.trim(), next: next };
-}
-
-/** NEXT_SCHEDULE 行のJSONを読む。形式が想定どおりのものだけ採用する(HTMLのdate/time入力にそのまま入れるため)。 */
-function parseNextScheduleJson_(json) {
-  var parsed;
-  try {
-    parsed = JSON.parse(json) || {};
-  } catch (err) {
-    return null; // 壊れたJSONは黙って無視する(要約本文まで捨てたくない)
-  }
-  var date = String(parsed.date || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-  return { date: date, start: normalizeHhmm_(parsed.start), end: normalizeHhmm_(parsed.end) };
-}
-
-/**
- * 要約本文から次回日程を読み取る。
- *
- * 見出しの「📅 2026-09-14（個別相談）」や「前回9月1日に出した宿題」を次回の予定と
- * 取り違えないよう、「次回」より後ろに書かれた日付だけを見る。さらに、相談会は2週間に一度の
- * ペースなので、半年より先になる読み取り結果は誤読とみなして捨てる(年をまたぐ判定を
- * 間違えると1年先の日付になるため)。
- */
-function extractNextFromBody_(text, baseDate) {
-  var lines = String(text || '').split('\n');
-  for (var i = 0; i < lines.length; i++) {
-    var line = toHalfWidthDigits_(lines[i]);
-    var at = line.indexOf('次回');
-    if (at === -1) continue;
-
-    var tail = line.slice(at);
-    var found = findDateInLine_(tail, baseDate);
-    if (!found) continue;
-    if (daysBetween_(baseDate, found.date) > 180) continue;
-
-    var times = findTimesInLine_(tail.replace(found.raw, ' '));
-    return { date: found.date, start: times[0] || '', end: times[1] || '' };
-  }
-  return null;
-}
-
-/** 「2026-10-01」「2026/10/1」「10月1日」「10/1」のいずれかを探す。年が無ければ実施日から補う。 */
-function findDateInLine_(line, baseDate) {
-  var m = /(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})/.exec(line);
-  if (m) {
-    if (!isValidMonthDay_(Number(m[2]), Number(m[3]))) return null;
-    return { raw: m[0], date: m[1] + '-' + pad2_(Number(m[2])) + '-' + pad2_(Number(m[3])) };
-  }
-
-  m = /(\d{1,2})月(\d{1,2})日/.exec(line);
-  // 「10/1」は時刻の「14:00」と紛れないよう、前後に数字やコロンが無いときだけ拾う
-  if (!m) m = /(?:^|[^\d:\/])(\d{1,2})\/(\d{1,2})(?![\d\/])/.exec(line);
-  if (!m) return null;
-
-  var month = Number(m[1]);
-  var day = Number(m[2]);
-  if (!isValidMonthDay_(month, day)) return null;
-  return { raw: m[0], date: resolveNextYear_(month, day, baseDate) + '-' + pad2_(month) + '-' + pad2_(day) };
-}
-
-/** 「14:00」「14時」「14時30分」を最大2つ拾い、開始・終了として返す。 */
-function findTimesInLine_(line) {
-  var re = /(\d{1,2})(?::(\d{2})|時(?:(\d{1,2})分?)?)/g;
-  var out = [];
-  var m;
-  while (out.length < 2 && (m = re.exec(line)) !== null) {
-    var hour = Number(m[1]);
-    var minute = Number(m[2] || m[3] || 0);
-    if (hour > 23 || minute > 59) continue;
-    out.push(pad2_(hour) + ':' + pad2_(minute));
-  }
-  return out;
-}
-
-/** 年が書かれていない「10月1日」を西暦に直す。次回は今回より後の日付なので、今回より前の月日なら翌年。 */
-function resolveNextYear_(month, day, baseDate) {
-  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(baseDate || ''));
-  if (!m) return new Date().getFullYear();
-  var year = Number(m[1]);
-  if (month < Number(m[2]) || (month === Number(m[2]) && day < Number(m[3]))) year += 1;
-  return year;
-}
-
-/** 'yyyy-MM-dd' 同士の日数差(bがaより後ならプラス)。片方が読めなければ0扱い。 */
-function daysBetween_(a, b) {
-  var x = parseYmd_(a);
-  var y = parseYmd_(b);
-  if (!x || !y) return 0;
-  return Math.round((y.getTime() - x.getTime()) / 86400000);
-}
-
-function parseYmd_(s) {
-  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
-  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
-}
-
-function isValidMonthDay_(month, day) {
-  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
-}
-
-/** 'HH:mm' に揃える。読めない形式は空文字(時刻だけ捨てて、日付は活かす)。 */
-function normalizeHhmm_(v) {
-  var m = /^(\d{1,2}):(\d{2})$/.exec(String(v == null ? '' : v).trim());
-  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return '';
-  return pad2_(Number(m[1])) + ':' + m[2];
-}
-
-/** 全角数字・全角コロン・全角スラッシュを半角に直す(モデルが全角で書いてくることがある)。 */
-function toHalfWidthDigits_(s) {
-  return String(s || '')
-    .replace(/[０-９]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
-    .replace(/：/g, ':')
-    .replace(/／/g, '/');
-}
-
-/** from〜to をまたぐ行を、まるごと(改行ごと)取り除く。 */
-function removeLinesAround_(text, from, to) {
-  var start = text.lastIndexOf('\n', from) + 1;
-  var end = text.indexOf('\n', to);
-  return text.slice(0, start) + (end === -1 ? '' : text.slice(end + 1));
-}
-
-function pad2_(n) {
-  return (n < 10 ? '0' : '') + n;
 }
 
 /**
@@ -1437,8 +1264,8 @@ function buildWebAppHtml_() {
     'const learner=document.getElementById("blearner-"+rec.id).value;' +
     'setBulkStatus("AIが要約を作成中です... ("+i+"/"+list.length+") "+rec.name);' +
     'setBulkCardStatus(rec.id,"要約を作成中...");' +
-    'google.script.run.withSuccessHandler(function(res){' +
-    'document.getElementById("btext-"+rec.id).value=res.text;' +
+    'google.script.run.withSuccessHandler(function(text){' +
+    'document.getElementById("btext-"+rec.id).value=text;' +
     'setBulkCardStatus(rec.id,"✅ 要約の下書きを作成しました。内容を確認してください。");ok++;next();})' +
     '.withFailureHandler(function(err){' +
     'setBulkCardStatus(rec.id,"❌ 要約エラー: "+err.message);ng++;next();})' +
@@ -1504,98 +1331,17 @@ function buildWebAppHtml_() {
     'document.getElementById("tabbtn-manage").classList.toggle("active",name==="manage");' +
     'if(name==="view")ensureViewLoaded();}' +
 
-'function plus30_(hhmm){' +
-    'const m=/^(\\d{1,2}):(\\d{2})$/.exec(String(hhmm||""));if(!m)return "";' +
-    'const t=((+m[1])*60+(+m[2])+30)%1440;' +
-    'return p2_(Math.floor(t/60))+":"+p2_(t%60);}' +
-
-    'function p2_(n){return (n<10?"0":"")+n;}' +
-
-    'function halfWidth_(s){return String(s||"")' +
-    '.replace(/[０-９]/g,function(c){return String.fromCharCode(c.charCodeAt(0)-65248);})' +
-    '.replace(/：/g,":").replace(/／/g,"/");}' +
-
-    'function okMd_(mo,d){return mo>=1&&mo<=12&&d>=1&&d<=31;}' +
-
-    'function dateInLine_(line,baseDate){' +
-    'let m=/(\\d{4})[-\\/年](\\d{1,2})[-\\/月](\\d{1,2})/.exec(line);' +
-    'if(m){if(!okMd_(+m[2],+m[3]))return null;' +
-    'return {raw:m[0],date:m[1]+"-"+p2_(+m[2])+"-"+p2_(+m[3])};}' +
-    'm=/(\\d{1,2})月(\\d{1,2})日/.exec(line);' +
-    'if(!m)m=/(?:^|[^\\d:\\/])(\\d{1,2})\\/(\\d{1,2})(?![\\d\\/])/.exec(line);' +
-    'if(!m)return null;' +
-    'const mo=+m[1],d=+m[2];if(!okMd_(mo,d))return null;' +
-    'return {raw:m[0],date:yearFor_(mo,d,baseDate)+"-"+p2_(mo)+"-"+p2_(d)};}' +
-
-    'function timesInLine_(line){' +
-    'const re=/(\\d{1,2})(?::(\\d{2})|時(?:(\\d{1,2})分?)?)/g;const out=[];let m;' +
-    'while(out.length<2&&(m=re.exec(line))!==null){' +
-    'const h=+m[1],mi=+(m[2]||m[3]||0);' +
-    'if(h>23||mi>59)continue;' +
-    'out.push(p2_(h)+":"+p2_(mi));}' +
-    'return out;}' +
-
-    'function ymd_(s){const m=/^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(s||""));' +
-    'return m?new Date(+m[1],+m[2]-1,+m[3]).getTime():null;}' +
-
-    'function yearFor_(mo,d,baseDate){' +
-    'const m=/^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(baseDate||""));' +
-    'if(!m)return new Date().getFullYear();' +
-    'let y=+m[1];if(mo<+m[2]||(mo===+m[2]&&d<+m[3]))y++;return y;}' +
-
-    'function daysAhead_(a,b){const x=ymd_(a),y=ymd_(b);' +
-    'if(x===null||y===null)return 0;return Math.round((y-x)/86400000);}' +
-
-    'function nextFromText(text,baseDate){' +
-    'const lines=String(text||"").split("\\n");' +
-    'for(let i=0;i<lines.length;i++){' +
-    'const line=halfWidth_(lines[i]);' +
-    'const at=line.indexOf("次回");if(at===-1)continue;' +
-    'const tail=line.slice(at);' +
-    'const d=dateInLine_(tail,baseDate);if(!d)continue;' +
-    'if(daysAhead_(baseDate,d.date)>180)continue;' +
-    'const t=timesInLine_(tail.replace(d.raw," "));' +
-    'return {date:d.date,start:t[0]||"",end:t[1]||""};}' +
-    'return null;}' +
-
-    /**
-     * サーバー側(splitNextSchedule_)が次回日程を返さなかった場合に、ブラウザ側でも
-     * 同じロジックで記録本文からもう一度読み取る(サーバー側のロジックの版が古い・
-     * 取りこぼした場合の保険。ロジックを重複させているのは意図的)。
-     */
-    'function applyNextSchedule_(prefix,id,next,text,baseDate){' +
-    'const dateEl=document.getElementById(prefix+"date-"+id);if(!dateEl)return false;' +
-    'const v=(next&&next.date)?next:nextFromText(text,baseDate);' +
-    'if(!v||!v.date)return false;' +
-    'dateEl.value=v.date;' +
-    'const st=v.start||"";' +
-    'document.getElementById(prefix+"start-"+id).value=st;' +
-    'document.getElementById(prefix+"end-"+id).value=v.end||plus30_(st);' +
-    'return true;}' +
-
-    'function fillEndSingle_(id){' +
-    'const s=document.getElementById("nextstart-"+id),e=document.getElementById("nextend-"+id);' +
-    'if(!s||!e||!s.value||e.value)return;' +
-    'e.value=plus30_(s.value);}' +
-
-    'function fillNextSingle_(id){' +
-    'const dateEl=document.getElementById("nextdate-"+id);if(!dateEl||dateEl.value)return;' +
-    'applyNextSchedule_("next",id,null,document.getElementById("text-"+id).value,' +
-    'document.getElementById("sessionDate").value);}' +
-
     'function addRow(){rowCount++;const id=rowCount;const div=document.createElement("div");div.className="row";div.id="row-"+id;' +
     'div.innerHTML="<span class=\\"remove\\" onclick=\\"removeRow("+id+")\\">✕ 削除</span>"+' +
     '"<div class=\\"field-grid\\">"+' +
     '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
     '"<div class=\\"field\\"><label>受講者</label><select id=\\"learner-"+id+"\\"></select></div>"+' +
     '"</div>"+' +
-    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" onchange=\\"fillNextSingle_("+id+")\\" ' +
-    'placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
-    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい。終了時刻は開始の30分後が既定)</label>"+' +
+    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
+    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
     '"<div class=\\"field-grid\\">"+' +
     '"<div class=\\"field\\"><input type=\\"date\\" id=\\"nextdate-"+id+"\\"></div>"+' +
-    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextstart-"+id+"\\" ' +
-    'onchange=\\"fillEndSingle_("+id+")\\" placeholder=\\"開始\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextstart-"+id+"\\" placeholder=\\"開始\\"></div>"+' +
     '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextend-"+id+"\\" placeholder=\\"終了\\"></div>"+' +
     '"</div>";' +
     'document.getElementById("rows").appendChild(div);updateLearners(id);' +
@@ -1621,13 +1367,9 @@ function buildWebAppHtml_() {
     'const learner=document.getElementById("learner-"+id).value;' +
     'participants.push(sheetName+":"+learner);});' +
     'setStatus("AIが要約を作成中です...(数十秒かかることがあります)");' +
-    'google.script.run.withSuccessHandler(function(res){' +
-    'let filled=0;' +
-    'rows.forEach(function(row){const id=row.id.split("-")[1];' +
-    'document.getElementById("text-"+id).value=res.text;' +
-    'if(applyNextSchedule_("next",id,res.next,res.text,date))filled++;});' +
-    'setStatus("要約案を作成しました。内容を確認・修正してから書き込んでください。"' +
-    '+(filled?"　次回相談予定日も会話から読み取って入れました(要確認)。":""));' +
+    'google.script.run.withSuccessHandler(function(text){' +
+    'rows.forEach(function(row){const id=row.id.split("-")[1];document.getElementById("text-"+id).value=text;});' +
+    'setStatus("要約案を作成しました。内容を確認・修正してから書き込んでください。");' +
     '}).withFailureHandler(function(err){setStatus("要約エラー: "+err.message);})' +
     '.generateSummary({vttText:vttText,date:date,isGroup:isGroup,participants:participants});}' +
 
