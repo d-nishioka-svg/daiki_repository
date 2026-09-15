@@ -39,6 +39,29 @@ Bはコードを追加しただけでは使えず、**Webアプリとしての�
 
 ## 3. Bの使い方(Webアプリ経由でVTTから自動作成)
 
+### 3-0. どのプロジェクトが本番か(最初に確認すること)
+
+似た名前のApps Scriptプロジェクトが2つあり、**取り違えると「直したのに変わらない」が起きる。**
+実際に一度起きた(古い方のWebアプリを見ながら、新しい方を直し続けていた)。
+
+| scriptId | プロジェクト名 | 紐付くスプレッドシート | 位置づけ |
+|---|---|---|---|
+| `1cl-jNK8f449NXxDo5jnLlkx27SC9C-qGB__-GLC5Cj2z4PjTVylDZWwU` | 学習管理アプリ | 『【使用中】学習進捗』 | **本番。ここを更新する** |
+| `1X7BBWBbeLqDTGdgeMcvoJ-kdM1-wvAEyOgZVJcFhVden7VgfDyWfiZYZ` | 学習進捗管理 | 『学習進捗管理スプレッドシート』 | 予備・検証用 |
+
+見分け方:
+
+- **スプレッドシートから開く**のが一番確実(拡張機能→Apps Script)。URLにscriptIdが出る
+- コマンドからは、どのスプレッドシートに紐付くかを `parentId` で確認できる:
+  `GET https://script.googleapis.com/v1/projects/<scriptId>` → `parentId` がスプレッドシートのID。
+  そのIDを `GET https://www.googleapis.com/drive/v3/files/<id>?fields=name` に渡すと名前が分かる
+  (Sheets APIは有効化されていないことがあるので、Drive APIで名前を引く方が確実)
+- **2つの権限承認は別物。**片方で承認しても、もう片方は未承認のまま。403の切り分け時に混乱しやすい
+
+**片方のプロジェクトに `appsscript.json` をそのままコピーしないこと。**
+`1cl-` 側は `oauthScopes` を書かずに自動判定させている。ここに手でスコープを足すと再承認が必要になり、
+3-2で苦労した403が再発しうる。コード(`コード.gs`)だけを反映すればよい。
+
 ### 3-1. GeminiRaytechライブラリを追加する
 
 要約の生成には、個人のGemini APIキーではなく、社内のAI推進室が用意したGASライブラリ
