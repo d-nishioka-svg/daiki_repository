@@ -1306,13 +1306,72 @@ function buildWebAppHtml_() {
     '.estimateTargets({files:[{id:1,name:"vtt",speakers:parsed.speakers,excerpt:parsed.excerpt}],' +
     'candidates:candidates});}' +
 
-    'function applyNextSchedule_(prefix,id,next){' +
+    'function applyNextSchedule_(prefix,id,next,text,baseDate){' +
     'const dateEl=document.getElementById(prefix+"date-"+id);if(!dateEl)return false;' +
-    'if(!next||!next.date)return false;' +
-    'dateEl.value=next.date;' +
-    'document.getElementById(prefix+"start-"+id).value=next.start||"";' +
-    'document.getElementById(prefix+"end-"+id).value=next.end||"";' +
+    'const v=(next&&next.date)?next:nextFromText(text,baseDate);' +
+    'if(!v||!v.date)return false;' +
+    'dateEl.value=v.date;' +
+    'document.getElementById(prefix+"start-"+id).value=v.start||"";' +
+    'document.getElementById(prefix+"end-"+id).value=v.end||"";' +
     'return true;}' +
+
+    'function fillNextSingle_(id){' +
+    'const dateEl=document.getElementById("nextdate-"+id);if(!dateEl||dateEl.value)return;' +
+    'applyNextSchedule_("next",id,null,document.getElementById("text-"+id).value,' +
+    'document.getElementById("sessionDate").value);}' +
+
+    'function fillNextBulk_(id){' +
+    'const dateEl=document.getElementById("bnextdate-"+id);if(!dateEl||dateEl.value)return;' +
+    'applyNextSchedule_("bnext",id,null,document.getElementById("btext-"+id).value,' +
+    'document.getElementById("bdate-"+id).value);}' +
+
+    'function nextFromText(text,baseDate){' +
+    'const lines=String(text||"").split("\\n");' +
+    'for(let i=0;i<lines.length;i++){' +
+    'const line=halfWidth_(lines[i]);' +
+    'const at=line.indexOf("次回");if(at===-1)continue;' +
+    'const tail=line.slice(at);' +
+    'const d=dateInLine_(tail,baseDate);if(!d)continue;' +
+    'if(daysAhead_(baseDate,d.date)>180)continue;' +
+    'const t=timesInLine_(tail.replace(d.raw," "));' +
+    'return {date:d.date,start:t[0]||"",end:t[1]||""};}' +
+    'return null;}' +
+
+    'function halfWidth_(s){return String(s||"")' +
+    '.replace(/[０-９]/g,function(c){return String.fromCharCode(c.charCodeAt(0)-65248);})' +
+    '.replace(/：/g,":").replace(/／/g,"/");}' +
+
+    'function dateInLine_(line,baseDate){' +
+    'let m=/(\\d{4})[-\\/年](\\d{1,2})[-\\/月](\\d{1,2})/.exec(line);' +
+    'if(m){if(!okMd_(+m[2],+m[3]))return null;' +
+    'return {raw:m[0],date:m[1]+"-"+p2_(+m[2])+"-"+p2_(+m[3])};}' +
+    'm=/(\\d{1,2})月(\\d{1,2})日/.exec(line);' +
+    'if(!m)m=/(?:^|[^\\d:\\/])(\\d{1,2})\\/(\\d{1,2})(?![\\d\\/])/.exec(line);' +
+    'if(!m)return null;' +
+    'const mo=+m[1],d=+m[2];if(!okMd_(mo,d))return null;' +
+    'return {raw:m[0],date:yearFor_(mo,d,baseDate)+"-"+p2_(mo)+"-"+p2_(d)};}' +
+
+    'function timesInLine_(line){' +
+    'const re=/(\\d{1,2})(?::(\\d{2})|時(?:(\\d{1,2})分?)?)/g;const out=[];let m;' +
+    'while(out.length<2&&(m=re.exec(line))!==null){' +
+    'const h=+m[1],mi=+(m[2]||m[3]||0);' +
+    'if(h>23||mi>59)continue;' +
+    'out.push(p2_(h)+":"+p2_(mi));}' +
+    'return out;}' +
+
+    'function yearFor_(mo,d,baseDate){' +
+    'const m=/^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(baseDate||""));' +
+    'if(!m)return new Date().getFullYear();' +
+    'let y=+m[1];if(mo<+m[2]||(mo===+m[2]&&d<+m[3]))y++;return y;}' +
+
+    'function daysAhead_(a,b){const x=ymd_(a),y=ymd_(b);' +
+    'if(x===null||y===null)return 0;return Math.round((y-x)/86400000);}' +
+
+    'function ymd_(s){const m=/^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(s||""));' +
+    'return m?new Date(+m[1],+m[2]-1,+m[3]).getTime():null;}' +
+
+    'function okMd_(mo,d){return mo>=1&&mo<=12&&d>=1&&d<=31;}' +
+    'function p2_(n){return (n<10?"0":"")+n;}' +
 
     'function guessDateFromFilename(name){' +
     'let m=/GMT(\\d{4})(\\d{2})(\\d{2})/.exec(name);' +
@@ -1407,7 +1466,7 @@ function buildWebAppHtml_() {
     '"<div class=\\"field\\"><label>受講者</label>"+' +
     '"<select id=\\"blearner-"+id+"\\" onchange=\\"onBulkManualChange("+id+")\\"></select></div>"+' +
     '"</div>"+' +
-    '"<label>記録内容</label><textarea id=\\"btext-"+id+"\\" ' +
+    '"<label>記録内容</label><textarea id=\\"btext-"+id+"\\" onchange=\\"fillNextBulk_("+id+")\\" ' +
     'placeholder=\\"「AIで要約をまとめて作成」を押すとここに下書きが入ります\\"></textarea>"+' +
     '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
     '"<div class=\\"field-grid\\">"+' +
@@ -1499,7 +1558,7 @@ function buildWebAppHtml_() {
     'setBulkCardStatus(rec.id,"要約を作成中...");' +
     'google.script.run.withSuccessHandler(function(res){' +
     'document.getElementById("btext-"+rec.id).value=res.text;' +
-    'const hasNext=applyNextSchedule_("bnext",rec.id,res.next);' +
+    'const hasNext=applyNextSchedule_("bnext",rec.id,res.next,res.text,date);' +
     'setBulkCardStatus(rec.id,"✅ 要約の下書きを作成しました。内容を確認してください。"' +
     '+(hasNext?"(次回相談予定日も会話から読み取りました)":""));ok++;next();})' +
     '.withFailureHandler(function(err){' +
@@ -1582,7 +1641,8 @@ function buildWebAppHtml_() {
     '"<div class=\\"field\\"><label>企業(シート)</label><select onchange=\\"updateLearners("+id+")\\" id=\\"sheet-"+id+"\\">"+sheetOptionsHtml()+"</select></div>"+' +
     '"<div class=\\"field\\"><label>受講者</label><select id=\\"learner-"+id+"\\"></select></div>"+' +
     '"</div>"+' +
-    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
+    '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" onchange=\\"fillNextSingle_("+id+")\\" ' +
+    'placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
     '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
     '"<div class=\\"field-grid\\">"+' +
     '"<div class=\\"field\\"><input type=\\"date\\" id=\\"nextdate-"+id+"\\"></div>"+' +
@@ -1616,7 +1676,7 @@ function buildWebAppHtml_() {
     'let filled=0;' +
     'rows.forEach(function(row){const id=row.id.split("-")[1];' +
     'document.getElementById("text-"+id).value=res.text;' +
-    'if(applyNextSchedule_("next",id,res.next))filled++;});' +
+    'if(applyNextSchedule_("next",id,res.next,res.text,date))filled++;});' +
     'setStatus("要約案を作成しました。内容を確認・修正してから書き込んでください。"' +
     '+(filled?"　次回相談予定日も会話から読み取って入れました(要確認)。":""));' +
     '}).withFailureHandler(function(err){setStatus("要約エラー: "+err.message);})' +
