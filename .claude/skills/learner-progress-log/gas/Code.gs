@@ -681,38 +681,164 @@ function generateSummary(payload) {
     payload.isGroup,
     payload.participants || []
   );
-  return splitNextSchedule_(callGemini_(prompt));
+  return splitNextSchedule_(callGemini_(prompt), payload.date);
 }
 
 /**
- * モデルの出力から NEXT_SCHEDULE 行を取り出し、本文と次回日程に分ける。
- * 行が無ければ next は null(次回日程が会話に出てこなかった場合)。
+ * モデルの出力から次回日程を取り出し、要約本文と分ける。
+ *
+ * 取り出し方は2段構え。まず機械可読の NEXT_SCHEDULE 行を探し、それが無ければ要約本文の
+ * 「次回」を含む行から日付・時刻を読み取る。モデルは NEXT_SCHEDULE 行を書き忘れることが
+ * あるが、【次回に向けて】には「次回日程：10月1日（木）14:00〜」のように書いてくるため、
+ * 本文から拾い直せば取りこぼしが減る。
+ *
+ * 次回日程が会話に出てこなかった場合は next が null になる(空欄のままにする)。
  */
-function splitNextSchedule_(raw) {
+function splitNextSchedule_(raw, baseDate) {
   var text = String(raw || '');
-  var m = /^[ \t]*NEXT_SCHEDULE[ \t]*:[ \t]*(\{[^\n]*\})[ \t]*$/m.exec(text);
-  if (!m) return { text: text.trim(), next: null };
-
   var next = null;
+
+  // 行頭に「- 」「**」が付いたり全角コロンやコードフェンスで囲われたりするので、緩めに拾う
+  var m = /NEXT_SCHEDULE[* \t]*[:：][ \t\n]*(\{[^{}]*\})/.exec(text);
+  if (m) {
+    next = parseNextScheduleJson_(m[1]);
+    text = removeLinesAround_(text, m.index, m.index + m[0].length - 1)
+      .replace(/^[ \t]*```[a-zA-Z]*[ \t]*$/gm, '');
+  }
+  if (!next) next = extractNextFromBody_(text, baseDate);
+
+  return { text: text.trim(), next: next };
+}
+
+/** NEXT_SCHEDULE 行のJSONを読む。形式が想定どおりのものだけ採用する(HTMLのdate/time入力にそのまま入れるため)。 */
+function parseNextScheduleJson_(json) {
+  var parsed;
   try {
-    var parsed = JSON.parse(m[1]) || {};
-    // 日付・時刻の形式が想定どおりのものだけ採用する(HTMLのdate/time入力にそのまま入れるため)
-    var date = /^\d{4}-\d{2}-\d{2}$/.test(String(parsed.date || '')) ? String(parsed.date) : '';
-    var start = /^\d{2}:\d{2}$/.test(String(parsed.start || '')) ? String(parsed.start) : '';
-    var end = /^\d{2}:\d{2}$/.test(String(parsed.end || '')) ? String(parsed.end) : '';
-    if (date) next = { date: date, start: start, end: end };
+    parsed = JSON.parse(json) || {};
   } catch (err) {
-    next = null; // 壊れたJSONは黙って無視する(要約本文まで捨てたくない)
+    return null; // 壊れたJSONは黙って無視する(要約本文まで捨てたくない)
+  }
+  var date = String(parsed.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return { date: date, start: normalizeHhmm_(parsed.start), end: normalizeHhmm_(parsed.end) };
+}
+
+/**
+ * 要約本文から次回日程を読み取る。
+ *
+ * 見出しの「📅 2026-09-14（個別相談）」や「前回9月1日に出した宿題」を次回の予定と
+ * 取り違えないよう、「次回」より後ろに書かれた日付だけを見る。さらに、相談会は2週間に一度の
+ * ペースなので、半年より先になる読み取り結果は誤読とみなして捨てる(年をまたぐ判定を
+ * 間違えると1年先の日付になるため)。
+ */
+function extractNextFromBody_(text, baseDate) {
+  var lines = String(text || '').split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var line = toHalfWidthDigits_(lines[i]);
+    var at = line.indexOf('次回');
+    if (at === -1) continue;
+
+    var tail = line.slice(at);
+    var found = findDateInLine_(tail, baseDate);
+    if (!found) continue;
+    if (daysBetween_(baseDate, found.date) > 180) continue;
+
+    var times = findTimesInLine_(tail.replace(found.raw, ' '));
+    return { date: found.date, start: times[0] || '', end: times[1] || '' };
+  }
+  return null;
+}
+
+/** 「2026-10-01」「2026/10/1」「10月1日」「10/1」のいずれかを探す。年が無ければ実施日から補う。 */
+function findDateInLine_(line, baseDate) {
+  var m = /(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})/.exec(line);
+  if (m) {
+    if (!isValidMonthDay_(Number(m[2]), Number(m[3]))) return null;
+    return { raw: m[0], date: m[1] + '-' + pad2_(Number(m[2])) + '-' + pad2_(Number(m[3])) };
   }
 
-  return { text: text.replace(m[0], '').trim(), next: next };
+  m = /(\d{1,2})月(\d{1,2})日/.exec(line);
+  // 「10/1」は時刻の「14:00」と紛れないよう、前後に数字やコロンが無いときだけ拾う
+  if (!m) m = /(?:^|[^\d:\/])(\d{1,2})\/(\d{1,2})(?![\d\/])/.exec(line);
+  if (!m) return null;
+
+  var month = Number(m[1]);
+  var day = Number(m[2]);
+  if (!isValidMonthDay_(month, day)) return null;
+  return { raw: m[0], date: resolveNextYear_(month, day, baseDate) + '-' + pad2_(month) + '-' + pad2_(day) };
+}
+
+/** 「14:00」「14時」「14時30分」を最大2つ拾い、開始・終了として返す。 */
+function findTimesInLine_(line) {
+  var re = /(\d{1,2})(?::(\d{2})|時(?:(\d{1,2})分?)?)/g;
+  var out = [];
+  var m;
+  while (out.length < 2 && (m = re.exec(line)) !== null) {
+    var hour = Number(m[1]);
+    var minute = Number(m[2] || m[3] || 0);
+    if (hour > 23 || minute > 59) continue;
+    out.push(pad2_(hour) + ':' + pad2_(minute));
+  }
+  return out;
+}
+
+/** 年が書かれていない「10月1日」を西暦に直す。次回は今回より後の日付なので、今回より前の月日なら翌年。 */
+function resolveNextYear_(month, day, baseDate) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(baseDate || ''));
+  if (!m) return new Date().getFullYear();
+  var year = Number(m[1]);
+  if (month < Number(m[2]) || (month === Number(m[2]) && day < Number(m[3]))) year += 1;
+  return year;
+}
+
+/** 'yyyy-MM-dd' 同士の日数差(bがaより後ならプラス)。片方が読めなければ0扱い。 */
+function daysBetween_(a, b) {
+  var x = parseYmd_(a);
+  var y = parseYmd_(b);
+  if (!x || !y) return 0;
+  return Math.round((y.getTime() - x.getTime()) / 86400000);
+}
+
+function parseYmd_(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+function isValidMonthDay_(month, day) {
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+/** 'HH:mm' に揃える。読めない形式は空文字(時刻だけ捨てて、日付は活かす)。 */
+function normalizeHhmm_(v) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(v == null ? '' : v).trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return '';
+  return pad2_(Number(m[1])) + ':' + m[2];
+}
+
+/** 全角数字・全角コロン・全角スラッシュを半角に直す(モデルが全角で書いてくることがある)。 */
+function toHalfWidthDigits_(s) {
+  return String(s || '')
+    .replace(/[０-９]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+    .replace(/：/g, ':')
+    .replace(/／/g, '/');
+}
+
+/** from〜to をまたぐ行を、まるごと(改行ごと)取り除く。 */
+function removeLinesAround_(text, from, to) {
+  var start = text.lastIndexOf('\n', from) + 1;
+  var end = text.indexOf('\n', to);
+  return text.slice(0, start) + (end === -1 ? '' : text.slice(end + 1));
+}
+
+function pad2_(n) {
+  return (n < 10 ? '0' : '') + n;
 }
 
 function buildSummaryPrompt_(vttText, date, isGroup, participants) {
   var kind = isGroup ? '集団' : '個別';
   var remarksLine = isGroup
     ? '[参加者一覧をそのまま記載: ' + participants.join('、') + ']'
-    : '(個別相談のため省略してよい)';
+    : '[個別相談なので「特になし」と書くこと]';
 
   return [
     'あなたは、企業向けITスキル研修(リスキリング支援サービス)の運営担当者です。',
@@ -747,10 +873,16 @@ function buildSummaryPrompt_(vttText, date, isGroup, participants) {
     '- 終了時刻が出ていない場合はendだけ空文字にすること。',
     '- **次回日程が決まっていない、または会話から読み取れない場合は、この行自体を出力しない**こと。',
     '  推測で日付を作らないこと。',
-    '- この行はテンプレートの外なので、【次回に向けて】の中には日程を書かなくてよい。',
+    '- 【次回に向けて】の中にも「次回日程：10月1日（木）14:00〜15:00」のように書いてよい。',
+    '  その場合もNEXT_SCHEDULE行は省略せず、必ず両方出力すること。',
     '',
     '--- 以下がVTT文字起こし ---',
-    vttText
+    vttText,
+    '--- VTT文字起こしここまで ---',
+    '',
+    'もう一度確認: 次回の相談日が具体的に決まっているなら、出力の最終行に',
+    'NEXT_SCHEDULE: {"date":"YYYY-MM-DD","start":"HH:mm","end":"HH:mm"} を必ず付けること。',
+    '決まっていなければ、この行は出力しないこと。'
   ].join('\n');
 }
 
