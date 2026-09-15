@@ -1311,9 +1311,23 @@ function buildWebAppHtml_() {
     'const v=(next&&next.date)?next:nextFromText(text,baseDate);' +
     'if(!v||!v.date)return false;' +
     'dateEl.value=v.date;' +
-    'document.getElementById(prefix+"start-"+id).value=v.start||"";' +
-    'document.getElementById(prefix+"end-"+id).value=v.end||"";' +
+    'const st=v.start||"";' +
+    'document.getElementById(prefix+"start-"+id).value=st;' +
+    'document.getElementById(prefix+"end-"+id).value=v.end||plus30_(st);' +
     'return true;}' +
+
+    'function plus30_(hhmm){' +
+    'const m=/^(\\d{1,2}):(\\d{2})$/.exec(String(hhmm||""));if(!m)return "";' +
+    'const t=((+m[1])*60+(+m[2])+30)%1440;' +
+    'return p2_(Math.floor(t/60))+":"+p2_(t%60);}' +
+
+    'function fillEndSingle_(id){fillEnd_("nextstart-"+id,"nextend-"+id);}' +
+    'function fillEndBulk_(id){fillEnd_("bnextstart-"+id,"bnextend-"+id);}' +
+
+    'function fillEnd_(startId,endId){' +
+    'const s=document.getElementById(startId),e=document.getElementById(endId);' +
+    'if(!s||!e||!s.value||e.value)return;' +
+    'e.value=plus30_(s.value);}' +
 
     'function fillNextSingle_(id){' +
     'const dateEl=document.getElementById("nextdate-"+id);if(!dateEl||dateEl.value)return;' +
@@ -1468,10 +1482,11 @@ function buildWebAppHtml_() {
     '"</div>"+' +
     '"<label>記録内容</label><textarea id=\\"btext-"+id+"\\" onchange=\\"fillNextBulk_("+id+")\\" ' +
     'placeholder=\\"「AIで要約をまとめて作成」を押すとここに下書きが入ります\\"></textarea>"+' +
-    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
+    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい。終了時刻は開始の30分後が既定)</label>"+' +
     '"<div class=\\"field-grid\\">"+' +
     '"<div class=\\"field\\"><input type=\\"date\\" id=\\"bnextdate-"+id+"\\"></div>"+' +
-    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"bnextstart-"+id+"\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"bnextstart-"+id+"\\" ' +
+    'onchange=\\"fillEndBulk_("+id+")\\"></div>"+' +
     '"<div class=\\"field\\"><input type=\\"time\\" id=\\"bnextend-"+id+"\\"></div>"+' +
     '"</div>"+' +
     '"<div class=\\"bulk-cardstatus\\" id=\\"bstatus-"+id+"\\"></div>";' +
@@ -1643,10 +1658,11 @@ function buildWebAppHtml_() {
     '"</div>"+' +
     '"<label>記録内容</label><textarea id=\\"text-"+id+"\\" onchange=\\"fillNextSingle_("+id+")\\" ' +
     'placeholder=\\"「AIで要約を作成」を押すとここに下書きが入ります\\"></textarea>"+' +
-    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい)</label>"+' +
+    '"<label>次回相談予定日(任意・まだ未確定なら空のままでよい。終了時刻は開始の30分後が既定)</label>"+' +
     '"<div class=\\"field-grid\\">"+' +
     '"<div class=\\"field\\"><input type=\\"date\\" id=\\"nextdate-"+id+"\\"></div>"+' +
-    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextstart-"+id+"\\" placeholder=\\"開始\\"></div>"+' +
+    '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextstart-"+id+"\\" ' +
+    'onchange=\\"fillEndSingle_("+id+")\\" placeholder=\\"開始\\"></div>"+' +
     '"<div class=\\"field\\"><input type=\\"time\\" id=\\"nextend-"+id+"\\" placeholder=\\"終了\\"></div>"+' +
     '"</div>";' +
     'document.getElementById("rows").appendChild(div);updateLearners(id);' +
